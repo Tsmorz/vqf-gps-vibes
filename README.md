@@ -168,6 +168,17 @@ happen — the 3σ envelope opening up is the point of the plot.
 The STEMMA cables are fragile and the GPS often has no fix, so neither is treated
 as exceptional:
 
+- **Every chip is probed for presence on the bus, because the driver's return
+  value cannot be trusted.** `Adafruit_LSM6DS::getEvent()` ends in an
+  unconditional `return true;` and the `_read()` behind it is declared `void`, so
+  a failed I2C transfer never reaches the caller — an unplugged LSM6DSOX reads as
+  a clean `(0, 0, 0)`, which is indistinguishable from free fall. Left
+  undetected this integrated to −975 m/s and −103 km in under two minutes on the
+  bench. Asking the address whether anything is still there cannot be fooled the
+  same way.
+- With no IMU the filter coasts on its last velocity with inflated process noise,
+  rather than integrating whatever the driver hands back or freezing (which would
+  claim the position is still known to its old accuracy).
 - Each chip tracks consecutive read failures and only goes offline after a run of
   them, so a flexing cable does not cause a re-init storm.
 - Offline chips are re-initialised at most once every 2 s, and the bus is
@@ -183,8 +194,13 @@ as exceptional:
   The PA1010D pads its I2C output with `0x0A` when idle and the Adafruit library
   discards that padding, so draining by character count costs one 32-byte I2C
   transfer *per character* and collapses the tick rate.
-- Divergence (a non-finite state or a negative variance) resets the filter rather
-  than publishing NaNs to every plot.
+- Divergence resets the filter. The check is about plausibility, not just NaN:
+  a runaway state stays perfectly finite all the way to 100 km, so position and
+  speed are bounded too.
+- Orientation is restarted when the IMU reconnects — an integrated attitude means
+  nothing across a gap in the data.
+- Inbound commands are parsed tolerantly (whitespace around colons, `true`/`false`
+  as well as `1`/`0`), so the protocol is not tied to one particular JSON encoder.
 
 Errors are reported as status returns, not C++ exceptions — exceptions in a 200 Hz
 real-time task on an MCU would cost far more than they are worth here.

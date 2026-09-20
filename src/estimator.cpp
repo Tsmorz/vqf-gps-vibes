@@ -205,6 +205,14 @@ void Tick(float dt) {
     ImuSample sample;
     const bool imu_ok = ImuRead(sample);
 
+    // Orientation is integrated, so its state means nothing across a gap in
+    // the data. Starting VQF over costs a few seconds of re-convergence and
+    // avoids carrying a stale attitude into the navigation filter.
+    if (ImuConsumeReconnectEvent()) {
+        vqf.resetState();
+        Serial.println("[est] IMU back -- orientation filter restarted");
+    }
+
     float quat[4] = {1, 0, 0, 0};
     if (imu_ok) {
         UpdateOrientation(sample);
@@ -229,6 +237,14 @@ void Tick(float dt) {
         if (active.zupt_enabled && vqf.getRestDetected()) {
             nav.UpdateZeroVelocity(active.sigma_zupt);
         }
+    } else {
+        // No IMU: coast on the last velocity and let the envelope widen. The
+        // alternative -- integrating whatever the driver returned -- is how an
+        // unplugged sensor reading (0, 0, 0) turns into simulated free fall.
+        NavFilter::Params process_noise;
+        process_noise.sigma_accel = active.sigma_accel;
+        process_noise.sigma_accel_bias = active.sigma_accel_bias;
+        nav.PredictCoasting(dt, process_noise);
     }
 
     ServiceGps(active);

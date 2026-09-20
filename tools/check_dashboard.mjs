@@ -137,27 +137,47 @@ if (missingIds.length) {
   failures.push('getElementById for ids not in the page: ' + [...new Set(missingIds)].join(', '));
 }
 
-// Orientation readouts come straight from att.rpy.
-expect('r-roll', '9.9°');
-expect('r-pitch', '-15.4°');
-expect('r-yaw', '114.5°');
-expect('r-rest', 'yes');
+// The canonical frame from test/test_telemetry has known values, so it gets
+// exact assertions. A frame captured live from the board does not, so it is
+// checked structurally instead -- every readout must still be populated.
+const canonical = JSON.parse(frameJson).t === 1234567;
 
-// Position and velocity must carry their 3-sigma envelope.
-expect('r-pe', '12.50 ±4.50');
-expect('r-pu', '1.75 ±9.00');
-expect('r-ve', '0.50 ±0.75');
-expect('r-sat', 9);
+if (canonical) {
+  expect('r-roll', '9.9°');
+  expect('r-pitch', '-15.4°');
+  expect('r-yaw', '114.5°');
+  expect('r-rest', 'yes');
 
-// Header chips reflect health.
-expect('c-status', 'normal');
-expect('c-gps', 'gps fix 9');
-expect('c-rate', '200 Hz');
+  // Position and velocity must carry their 3-sigma envelope.
+  expect('r-pe', '12.50 ±4.50');
+  expect('r-pu', '1.75 ±9.00');
+  expect('r-ve', '0.50 ±0.75');
+  expect('r-sat', 9);
 
-// Sliders seeded from the device's own params, not the page's defaults.
-expect('v-sigma_accel', '0.350 m/s²/√Hz');
-expect('v-tau_mag', '9.00 s');
-if (!elements.get('k-zupt')?.checked) failures.push('#k-zupt was not seeded from params');
+  // Header chips reflect health.
+  expect('c-status', 'normal');
+  expect('c-gps', 'gps fix 9');
+  expect('c-rate', '200 Hz');
+
+  // Sliders seeded from the device's own params, not the page's defaults.
+  expect('v-sigma_accel', '0.350 m/s²/√Hz');
+  expect('v-tau_mag', '9.00 s');
+  if (!elements.get('k-zupt')?.checked) failures.push('#k-zupt was not seeded from params');
+} else {
+  console.log('live frame -- checking structurally');
+  const populated = ['r-roll','r-pitch','r-yaw','r-rest','r-pe','r-pn','r-pu',
+                     'r-ve','r-vn','r-vu','r-sat','r-ba','r-gbias',
+                     'c-status','c-gps','c-rate','v-sigma_accel','v-tau_mag'];
+  for (const id of populated) {
+    const got = text(id);
+    if (got === '' || got === undefined || got === '—' || String(got).includes('NaN')) {
+      failures.push(`#${id} was not populated from the live frame (got ${JSON.stringify(got)})`);
+    }
+  }
+  console.log('  rpy =', text('r-roll'), text('r-pitch'), text('r-yaw'),
+              '| pos E =', text('r-pe'), '| sats =', text('r-sat'),
+              '| status =', text('c-status'));
+}
 
 if (drawCalls < 100) failures.push(`only ${drawCalls} canvas draw calls -- panels did not render`);
 

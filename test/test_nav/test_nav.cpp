@@ -130,6 +130,40 @@ void test_accel_bias_is_observed_when_held_stationary() {
     TEST_ASSERT_FLOAT_WITHIN(0.1f, kBias, filter.state(NavFilter::kBiasX));
 }
 
+// With no IMU the filter must coast on its last velocity and open its
+// envelope faster than it would with a real accelerometer -- never freeze.
+void test_coasting_widens_the_envelope_without_moving_wildly() {
+    NavFilter filter;
+    const NavFilter::Params params;
+    filter.UpdateScalar(NavFilter::kVelEast, 1.0f, 0.01f);
+
+    const float before = filter.ThreeSigma(NavFilter::kPosEast);
+    for (int i = 0; i < 2000; i++) {
+        filter.PredictCoasting(0.005f, params);
+    }
+
+    // Ten seconds at about 1 m/s -- coasting, not frozen and not diverging.
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 10.0f, filter.state(NavFilter::kPosEast));
+    TEST_ASSERT_TRUE(filter.ThreeSigma(NavFilter::kPosEast) > before);
+    TEST_ASSERT_FALSE(filter.IsDiverged());
+}
+
+// An unplugged accelerometer reads as a clean (0, 0, 0), which is
+// indistinguishable from free fall. The state stays finite the whole way down,
+// so the divergence check has to be about plausibility, not just NaN.
+void test_free_fall_from_a_dead_sensor_is_caught() {
+    NavFilter filter;
+    const float dead_sensor[3] = {0.0f, 0.0f, 0.0f};
+    const NavFilter::Params params;
+
+    for (int i = 0; i < 200 * 200 && !filter.IsDiverged(); i++) {
+        filter.Predict(dead_sensor, kIdentityRotation, 0.005f, params);
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(filter.IsDiverged(),
+                             "a sensor reading zeros must eventually be caught");
+}
+
 // A nonsensical timestep must be ignored rather than poison the covariance.
 void test_bad_timestep_is_rejected() {
     NavFilter filter;
@@ -195,6 +229,8 @@ int main() {
     RUN_TEST(test_repeated_gps_fixes_converge);
     RUN_TEST(test_zero_velocity_update_arrests_drift);
     RUN_TEST(test_accel_bias_is_observed_when_held_stationary);
+    RUN_TEST(test_coasting_widens_the_envelope_without_moving_wildly);
+    RUN_TEST(test_free_fall_from_a_dead_sensor_is_caught);
     RUN_TEST(test_bad_timestep_is_rejected);
     RUN_TEST(test_geo_degree_scales_are_physical);
     RUN_TEST(test_geo_projection_is_relative_to_origin);

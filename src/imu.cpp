@@ -21,10 +21,23 @@ struct SensorHealth {
     int consecutive_failures = 0;
     uint32_t total_failures = 0;
     uint32_t last_retry_ms = 0;
+    bool reconnected = false;  // set on recovery, cleared once acted on
 };
 
 SensorHealth accel_gyro;
 SensorHealth magnetometer;
+
+// How often to confirm each chip still acknowledges on the bus.
+//
+// This probe is the only reliable way to notice an unplugged sensor.
+// Adafruit_LSM6DS::getEvent() ends in an unconditional `return true;` and the
+// _read() behind it is declared void, so a failed I2C transfer never reaches
+// the caller -- an unplugged LSM6DSOX reads as a clean (0, 0, 0), which the
+// navigation filter would faithfully integrate as free fall. Asking the
+// address whether anything is still there costs one tiny transaction and
+// cannot be fooled the same way.
+constexpr uint32_t kPresenceCheckIntervalMs = 250;
+uint32_t last_presence_check_ms = 0;
 
 // Applies the ranges and output data rates the filter expects.
 //
@@ -97,6 +110,32 @@ void NoteSuccess(SensorHealth& health) {
     health.consecutive_failures = 0;
 }
 
+// Takes a chip offline the moment it stops acknowledging. Unlike a failed
+// read, a missing ACK is unambiguous, so there is no tolerance count here.
+void CheckPresence(SensorHealth& health, const char* name) {
+    if (!health.healthy || health.address == 0) {
+        return;
+    }
+    if (I2cDeviceResponds(health.address)) {
+        return;
+    }
+    Serial.printf("[imu] %s stopped acknowledging at 0x%02X -- offline\n", name, health.address);
+    health.healthy = false;
+    health.total_failures++;
+}
+
+// Probes both chips, rate-limited so the check never competes with sensor
+// reads for bus time.
+void CheckPresenceOfBothChips() {
+    const uint32_t now = millis();
+    if (now - last_presence_check_ms < kPresenceCheckIntervalMs) {
+        return;
+    }
+    last_presence_check_ms = now;
+    CheckPresence(accel_gyro, "LSM6DSOX");
+    CheckPresence(magnetometer, "LIS3MDL");
+}
+
 // Re-initialises an offline chip, at most once per SENSOR_RETRY_INTERVAL_MS so
 // a permanently unplugged sensor cannot monopolise the bus. The bus itself is
 // recovered first, since a mid-transfer reset can leave SDA held low.
@@ -111,6 +150,7 @@ void RetryIfOffline(SensorHealth& health, const char* name, bool (*begin_fn)()) 
         I2cRecover();
     }
     if (begin_fn()) {
+        health.reconnected = true;
         Serial.printf("[imu] %s reconnected\n", name);
     }
 }
@@ -127,6 +167,7 @@ void ImuBegin() {
 }
 
 bool ImuRead(ImuSample& out) {
+    CheckPresenceOfBothChips();
     RetryIfOffline(accel_gyro, "LSM6DSOX", BeginAccelGyro);
     RetryIfOffline(magnetometer, "LIS3MDL", BeginMagnetometer);
 
@@ -172,6 +213,14 @@ bool ImuRead(ImuSample& out) {
 
 bool ImuAccelGyroHealthy() {
     return accel_gyro.healthy;
+}
+
+bool ImuConsumeReconnectEvent() {
+    if (!accel_gyro.reconnected) {
+        return false;
+    }
+    accel_gyro.reconnected = false;
+    return true;
 }
 
 bool ImuMagHealthy() {

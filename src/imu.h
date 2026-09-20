@@ -30,6 +30,11 @@ bool ImuRead(ImuSample& out);
 bool ImuAccelGyroHealthy();
 bool ImuMagHealthy();
 
+// True once after the accelerometer/gyroscope comes back from a dropout, then
+// false until the next one. The estimator uses this to reset the orientation
+// filter, whose internal state means nothing across a gap in the data.
+bool ImuConsumeReconnectEvent();
+
 // Total read failures since boot -- surfaced on the dashboard as an early
 // warning that a STEMMA cable is intermittent.
 uint32_t ImuFailureCount();

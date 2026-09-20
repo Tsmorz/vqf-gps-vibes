@@ -17,17 +17,52 @@ WebServer http_server(80);
 WebSocketsServer socket_server(81);
 size_t connected_clients = 0;
 
-// Pulls a numeric field out of a small fixed-schema JSON object. The inbound
-// messages have under a dozen known keys, so a full JSON parser would cost
-// more flash than the protocol is worth.
-bool ExtractNumber(const char* json, const char* key, float& out) {
-    char pattern[32];
-    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    const char* found = strstr(json, pattern);
+// Locates the value of `key` in a small fixed-schema JSON object, returning a
+// pointer to its first character or nullptr.
+//
+// The inbound messages have under a dozen known keys, so a full JSON parser
+// would cost more flash than the protocol is worth. Whitespace around the
+// colon is tolerated even though the dashboard's JSON.stringify never emits
+// any: a protocol that only works for one particular encoder is a trap for
+// anything else that ever talks to this board, including test tooling.
+const char* FindValue(const char* json, const char* key) {
+    char quoted[32];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", key);
+    const char* found = strstr(json, quoted);
     if (found == nullptr) {
+        return nullptr;
+    }
+    const char* cursor = found + strlen(quoted);
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor++;
+    }
+    if (*cursor != ':') {
+        return nullptr;
+    }
+    cursor++;
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor++;
+    }
+    return cursor;
+}
+
+// True if `key` holds exactly the string `value`.
+bool HasStringValue(const char* json, const char* key, const char* value) {
+    const char* found = FindValue(json, key);
+    if (found == nullptr || *found != '"') {
         return false;
     }
-    const char* value = found + strlen(pattern);
+    found++;
+    const size_t length = strlen(value);
+    return strncmp(found, value, length) == 0 && found[length] == '"';
+}
+
+// Reads a numeric field. strtof skips any remaining whitespace itself.
+bool ExtractNumber(const char* json, const char* key, float& out) {
+    const char* value = FindValue(json, key);
+    if (value == nullptr) {
+        return false;
+    }
     char* end = nullptr;
     const float parsed = strtof(value, &end);
     if (end == value) {
@@ -37,11 +72,22 @@ bool ExtractNumber(const char* json, const char* key, float& out) {
     return true;
 }
 
-// Reads a 0/1 flag, leaving `out` untouched when the key is absent.
+// Reads a flag, accepting both 0/1 and true/false, and leaving `out`
+// untouched when the key is absent.
 void ExtractFlag(const char* json, const char* key, bool& out) {
-    float value = 0.0f;
-    if (ExtractNumber(json, key, value)) {
-        out = value != 0.0f;
+    const char* value = FindValue(json, key);
+    if (value == nullptr) {
+        return;
+    }
+    if (strncmp(value, "true", 4) == 0) {
+        out = true;
+    } else if (strncmp(value, "false", 5) == 0) {
+        out = false;
+    } else {
+        float number = 0.0f;
+        if (ExtractNumber(json, key, number)) {
+            out = number != 0.0f;
+        }
     }
 }
 
@@ -98,9 +144,9 @@ void OnSocketEvent(uint8_t client, WStype_t type, uint8_t* payload, size_t lengt
     memcpy(message, payload, copied);
     message[copied] = '\0';
 
-    if (strstr(message, "\"cmd\":\"params\"") != nullptr) {
+    if (HasStringValue(message, "cmd", "params")) {
         HandleParamsCommand(message);
-    } else if (strstr(message, "\"cmd\":\"reset\"") != nullptr) {
+    } else if (HasStringValue(message, "cmd", "reset")) {
         EstimatorResetFilter();
     }
 }

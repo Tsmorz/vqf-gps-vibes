@@ -28,6 +28,19 @@ class NavFilter {
     static constexpr int kNumStates = 9;
     static constexpr float kGravityMps2 = 9.80665f;
 
+    // Bounds beyond which the state is not drifting, it is broken. A filter
+    // fed garbage can run away to values that are still finite -- an
+    // accelerometer that reads (0, 0, 0) because its cable came out looks
+    // exactly like free fall, and reaches 100 km in under two minutes. These
+    // are generous enough that no plausible use of this board reaches them.
+    static constexpr float kMaxPlausiblePositionM = 1.0e6f;
+    static constexpr float kMaxPlausibleSpeedMps = 1.0e3f;
+
+    // Process-noise multiplier applied while coasting without an IMU. The
+    // constant-velocity assumption is much weaker than a measured
+    // acceleration, and the envelope should say so.
+    static constexpr float kCoastingNoiseFactor = 10.0f;
+
     // Indices into the state vector, also used to address a scalar update.
     enum StateIndex {
         kPosEast = 0,
@@ -87,6 +100,28 @@ class NavFilter {
             x_[kVelEast + axis] += accel_enu[axis] * dt;
         }
         PropagateCovariance(r_body_to_enu, dt, params);
+    }
+
+    // Propagates with no accelerometer at all: constant velocity, with the
+    // process noise inflated to reflect that this is a guess rather than a
+    // measurement. Used while the IMU is disconnected -- far better than
+    // integrating whatever the driver hands back, and better than freezing,
+    // which would claim the position is still known to its old accuracy.
+    void PredictCoasting(float dt, const Params& params) {
+        if (dt <= 0.0f || dt > 0.5f) {
+            return;
+        }
+        for (int axis = 0; axis < 3; axis++) {
+            x_[kPosEast + axis] += x_[kVelEast + axis] * dt;
+        }
+
+        Params coasting = params;
+        coasting.sigma_accel *= kCoastingNoiseFactor;
+        // With no attitude to resolve the bias states through, the identity
+        // stands in for the rotation. The bias block is unobservable while
+        // coasting either way, so the choice does not matter.
+        static const float kIdentity[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        PropagateCovariance(kIdentity, dt, coasting);
     }
 
     // Applies one scalar measurement `z` of the state at `index`, with
@@ -169,11 +204,21 @@ class NavFilter {
         return diagonal > 0.0f ? 3.0f * sqrtf(diagonal) : 0.0f;
     }
 
-    // True if any state or covariance diagonal has gone non-finite. The caller
-    // resets the filter rather than publishing NaNs to the dashboard.
+    // True if the filter has stopped producing anything meaningful: a
+    // non-finite value, a negative variance, or a state so far outside
+    // physical plausibility that it can only be the result of bad input.
+    // The caller resets rather than publishing it to the dashboard.
     bool IsDiverged() const {
         for (int i = 0; i < kNumStates; i++) {
             if (!isfinite(x_[i]) || !isfinite(p_[i][i]) || p_[i][i] < 0.0f) {
+                return true;
+            }
+        }
+        for (int axis = 0; axis < 3; axis++) {
+            if (fabsf(x_[kPosEast + axis]) > kMaxPlausiblePositionM) {
+                return true;
+            }
+            if (fabsf(x_[kVelEast + axis]) > kMaxPlausibleSpeedMps) {
                 return true;
             }
         }

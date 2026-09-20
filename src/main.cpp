@@ -62,11 +62,16 @@ void LogPeriodically(const EstimatorSnapshot& s) {
     }
     last_log_ms = now;
 
+    // The raw GPS position sits next to the estimate on purpose: when the two
+    // march off together the receiver is wandering (multipath indoors), and
+    // when only the estimate moves the fault is in the filter.
     Serial.printf(
         "[st] %.0fHz rpy=%6.1f %6.1f %6.1f  pos=%7.2f %7.2f %7.2f  3s=%5.1f %5.1f %5.1f  "
-        "gps=%s(%u)  imu=%s mag=%s  clients=%u\n",
+        "vel=%6.2f %6.2f %6.2f  rest=%d  raw=%7.2f %7.2f %7.2f  gps=%s(%u)  "
+        "imu=%s mag=%s  clients=%u\n",
         s.estimator_hz, s.roll_deg, s.pitch_deg, s.yaw_deg, s.pos[0], s.pos[1], s.pos[2],
-        s.pos_sigma3[0], s.pos_sigma3[1], s.pos_sigma3[2],
+        s.pos_sigma3[0], s.pos_sigma3[1], s.pos_sigma3[2], s.vel[0], s.vel[1], s.vel[2],
+        s.rest_detected ? 1 : 0, s.gps_enu[0], s.gps_enu[1], s.gps_enu[2],
         s.gps_fix ? "fix" : (s.gps_healthy ? "searching" : "absent"), s.gps_satellites,
         s.imu_healthy ? "ok" : "LOST", s.mag_healthy ? "ok" : "LOST", WebServerClientCount());
 }
