@@ -33,6 +33,12 @@ struct EstimatorSnapshot {
     bool rest_detected = false;
     bool mag_disturbed = false;
 
+    // ── Magnetometer calibration (see mag_cal.h) ─────────────────────────
+    bool mag_calibrated = false;
+    bool mag_collecting = false;
+    float mag_cal_progress = 0.0f;  // 0..1 through a sweep
+    float mag_field_ut = 0.0f;      // corrected field magnitude
+
     // ── Navigation state, from the EKF ───────────────────────────────────
     float pos[3] = {0, 0, 0};         // m, local ENU
     float vel[3] = {0, 0, 0};         // m/s, local ENU

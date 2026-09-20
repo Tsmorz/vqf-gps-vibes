@@ -3,9 +3,12 @@
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_LSM6DSOX.h>
 #include <Arduino.h>
+#include <Preferences.h>
+#include <math.h>
 
 #include "config.h"
 #include "i2c_bus.h"
+#include "mag_cal.h"
 
 namespace {
 
@@ -26,6 +29,54 @@ struct SensorHealth {
 
 SensorHealth accel_gyro;
 SensorHealth magnetometer;
+
+// ── Magnetometer calibration ────────────────────────────────────────────────
+// The fit is applied on core 1 as samples arrive; start/finish/clear come from
+// the web handler on core 0. The spinlock covers both the request flags and
+// the published status, and every critical section here is a few assignments.
+MagCalibration mag_cal;
+MagCalCollector mag_collector;
+bool mag_collecting = false;
+float mag_field_ut = 0.0f;
+portMUX_TYPE mag_lock = portMUX_INITIALIZER_UNLOCKED;
+
+constexpr const char* kMagCalNamespace = "magcal";
+
+// Restores the calibration saved by a previous sweep, so the board comes up
+// with a usable heading instead of needing a sweep after every reboot.
+void LoadMagCalibration() {
+    Preferences prefs;
+    if (!prefs.begin(kMagCalNamespace, true)) {
+        return;
+    }
+    const float offset_x = prefs.getFloat("ox", NAN);
+    if (isfinite(offset_x)) {
+        mag_cal.offset[0] = offset_x;
+        mag_cal.offset[1] = prefs.getFloat("oy", 0.0f);
+        mag_cal.offset[2] = prefs.getFloat("oz", 0.0f);
+        mag_cal.scale[0] = prefs.getFloat("sx", 1.0f);
+        mag_cal.scale[1] = prefs.getFloat("sy", 1.0f);
+        mag_cal.scale[2] = prefs.getFloat("sz", 1.0f);
+        mag_cal.valid = true;
+        Serial.printf("[imu] mag calibration restored: offset %.1f %.1f %.1f uT\n",
+                      mag_cal.offset[0], mag_cal.offset[1], mag_cal.offset[2]);
+    }
+    prefs.end();
+}
+
+void SaveMagCalibration(const MagCalibration& cal) {
+    Preferences prefs;
+    if (!prefs.begin(kMagCalNamespace, false)) {
+        return;
+    }
+    prefs.putFloat("ox", cal.offset[0]);
+    prefs.putFloat("oy", cal.offset[1]);
+    prefs.putFloat("oz", cal.offset[2]);
+    prefs.putFloat("sx", cal.scale[0]);
+    prefs.putFloat("sy", cal.scale[1]);
+    prefs.putFloat("sz", cal.scale[2]);
+    prefs.end();
+}
 
 // How often to confirm each chip still acknowledges on the bus.
 //
@@ -158,6 +209,7 @@ void RetryIfOffline(SensorHealth& health, const char* name, bool (*begin_fn)()) 
 }  // namespace
 
 void ImuBegin() {
+    LoadMagCalibration();
     if (!BeginAccelGyro()) {
         Serial.println("[imu] LSM6DSOX not found -- will keep retrying");
     }
@@ -198,6 +250,18 @@ bool ImuRead(ImuSample& out) {
             out.mag[0] = mag_event.magnetic.x;
             out.mag[1] = mag_event.magnetic.y;
             out.mag[2] = mag_event.magnetic.z;
+
+            // A sweep collects raw readings; the correction is applied after,
+            // so a sweep in progress never feeds on its own output.
+            portENTER_CRITICAL(&mag_lock);
+            if (mag_collecting) {
+                mag_collector.Add(out.mag);
+            }
+            mag_cal.Apply(out.mag);
+            mag_field_ut =
+                sqrtf(out.mag[0] * out.mag[0] + out.mag[1] * out.mag[1] + out.mag[2] * out.mag[2]);
+            portEXIT_CRITICAL(&mag_lock);
+
             out.mag_valid = true;
             NoteSuccess(magnetometer);
         } else {
@@ -229,4 +293,65 @@ bool ImuMagHealthy() {
 
 uint32_t ImuFailureCount() {
     return accel_gyro.total_failures + magnetometer.total_failures;
+}
+
+void ImuMagCalStart() {
+    portENTER_CRITICAL(&mag_lock);
+    mag_collector.Reset();
+    mag_collecting = true;
+    portEXIT_CRITICAL(&mag_lock);
+    Serial.println("[imu] mag calibration started -- turn the board through all orientations");
+}
+
+bool ImuMagCalFinish() {
+    MagCalibration fitted;
+    bool solved = false;
+
+    portENTER_CRITICAL(&mag_lock);
+    mag_collecting = false;
+    solved = mag_collector.Solve(fitted);
+    if (solved) {
+        mag_cal = fitted;
+    }
+    portEXIT_CRITICAL(&mag_lock);
+
+    if (!solved) {
+        Serial.println("[imu] mag calibration rejected -- the board was not turned far enough");
+        return false;
+    }
+    SaveMagCalibration(fitted);
+    Serial.printf("[imu] mag calibrated: offset %.1f %.1f %.1f uT  scale %.3f %.3f %.3f\n",
+                  fitted.offset[0], fitted.offset[1], fitted.offset[2], fitted.scale[0],
+                  fitted.scale[1], fitted.scale[2]);
+    return true;
+}
+
+void ImuMagCalClear() {
+    portENTER_CRITICAL(&mag_lock);
+    mag_cal = MagCalibration();
+    mag_collecting = false;
+    mag_collector.Reset();
+    portEXIT_CRITICAL(&mag_lock);
+
+    Preferences prefs;
+    if (prefs.begin(kMagCalNamespace, false)) {
+        prefs.clear();
+        prefs.end();
+    }
+    Serial.println("[imu] mag calibration cleared");
+}
+
+MagCalStatus ImuMagCalStatus() {
+    MagCalStatus status;
+    portENTER_CRITICAL(&mag_lock);
+    status.calibrated = mag_cal.valid;
+    status.collecting = mag_collecting;
+    status.progress = mag_collector.progress();
+    status.samples = mag_collector.sample_count();
+    for (int axis = 0; axis < 3; axis++) {
+        status.offset[axis] = mag_cal.offset[axis];
+    }
+    status.field_ut = mag_field_ut;
+    portEXIT_CRITICAL(&mag_lock);
+    return status;
 }

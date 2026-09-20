@@ -11,6 +11,22 @@ namespace {
 WifiMode active_mode = WifiMode::kAccessPoint;
 String address;
 
+// Disables WiFi modem sleep.
+//
+// With power save on -- the default in station mode -- the radio sleeps
+// between the access point's DTIM beacons and incoming packets sit buffered
+// at the router until it wakes. On this network that showed up as 58-97 ms
+// ping times on a LAN, an 8.7 kB page taking 1.9 s, and a WebSocket handshake
+// needing 12 s to complete, because the library reads one header line per
+// loop iteration and every one of them paid the wake-up latency.
+//
+// The cost is a noticeably higher idle current, which matters if the board is
+// running from a battery. It is the right trade here: this is a real-time
+// telemetry device whose whole purpose is a responsive live stream.
+void DisableModemSleep() {
+    WiFi.setSleep(false);
+}
+
 // True when secrets.h actually has a network configured. An empty SSID means
 // "always be an access point".
 bool HasConfiguredNetwork() {
@@ -38,6 +54,7 @@ bool JoinConfiguredNetwork() {
         return false;
     }
     address = WiFi.localIP().toString();
+    DisableModemSleep();
     return true;
 }
 
@@ -59,6 +76,7 @@ bool StartAccessPoint() {
         return false;
     }
     address = WiFi.softAPIP().toString();
+    DisableModemSleep();
     return true;
 }
 

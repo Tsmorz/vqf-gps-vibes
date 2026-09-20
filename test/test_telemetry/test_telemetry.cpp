@@ -45,6 +45,10 @@ EstimatorSnapshot MakeSnapshot() {
     s.gyro_bias[2] = 0.00789f;
     s.rest_detected = true;
     s.mag_disturbed = false;
+    s.mag_calibrated = true;
+    s.mag_collecting = false;
+    s.mag_cal_progress = 1.0f;
+    s.mag_field_ut = 48.6f;
 
     s.pos[0] = 12.5f;
     s.pos[1] = -3.25f;

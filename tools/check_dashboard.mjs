@@ -163,10 +163,17 @@ if (canonical) {
   expect('v-sigma_accel', '0.350 m/s²/√Hz');
   expect('v-tau_mag', '9.00 s');
   if (!elements.get('k-zupt')?.checked) failures.push('#k-zupt was not seeded from params');
+
+  // Sensor magnitudes and calibration state.
+  expect('r-anorm', '9.80 m/s²');
+  expect('r-mnorm', '48.9 µT');
+  expect('r-magcal', 'calibrated');
+  expect('btn-magcal', 'Calibrate magnetometer');
 } else {
   console.log('live frame -- checking structurally');
   const populated = ['r-roll','r-pitch','r-yaw','r-rest','r-pe','r-pn','r-pu',
                      'r-ve','r-vn','r-vu','r-sat','r-ba','r-gbias',
+                     'r-anorm','r-mnorm','r-magcal',
                      'c-status','c-gps','c-rate','v-sigma_accel','v-tau_mag'];
   for (const id of populated) {
     const got = text(id);
@@ -177,6 +184,8 @@ if (canonical) {
   console.log('  rpy =', text('r-roll'), text('r-pitch'), text('r-yaw'),
               '| pos E =', text('r-pe'), '| sats =', text('r-sat'),
               '| status =', text('c-status'));
+  console.log('  |accel| =', text('r-anorm'), '| |mag| =', text('r-mnorm'),
+              '| mag cal =', text('r-magcal'));
 }
 
 if (drawCalls < 100) failures.push(`only ${drawCalls} canvas draw calls -- panels did not render`);

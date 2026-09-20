@@ -52,6 +52,26 @@ const char* StatusName(SystemStatus status) {
     }
 }
 
+// Iterations per second of loop() itself. The web server only gets serviced
+// as often as this runs, so a sagging value shows up directly as a slow or
+// failed WebSocket handshake.
+float MeasureLoopRate() {
+    static uint32_t window_start_ms = 0;
+    static uint32_t iterations = 0;
+    static float measured_hz = 0.0f;
+
+    iterations++;
+    const uint32_t now = millis();
+    if (now - window_start_ms >= 1000) {
+        measured_hz = iterations * 1000.0f / (now - window_start_ms);
+        window_start_ms = now;
+        iterations = 0;
+    }
+    return measured_hz;
+}
+
+float loop_hz = 0.0f;
+
 // One line a second on the USB serial port, so the board can be watched
 // without a browser attached.
 void LogPeriodically(const EstimatorSnapshot& s) {
@@ -66,10 +86,11 @@ void LogPeriodically(const EstimatorSnapshot& s) {
     // march off together the receiver is wandering (multipath indoors), and
     // when only the estimate moves the fault is in the filter.
     Serial.printf(
-        "[st] %.0fHz rpy=%6.1f %6.1f %6.1f  pos=%7.2f %7.2f %7.2f  3s=%5.1f %5.1f %5.1f  "
+        "[st] %.0fHz loop=%.0fHz rpy=%6.1f %6.1f %6.1f  "
+        "pos=%7.2f %7.2f %7.2f  3s=%5.1f %5.1f %5.1f  "
         "vel=%6.2f %6.2f %6.2f  rest=%d  raw=%7.2f %7.2f %7.2f  gps=%s(%u)  "
         "imu=%s mag=%s  clients=%u\n",
-        s.estimator_hz, s.roll_deg, s.pitch_deg, s.yaw_deg, s.pos[0], s.pos[1], s.pos[2],
+        s.estimator_hz, loop_hz, s.roll_deg, s.pitch_deg, s.yaw_deg, s.pos[0], s.pos[1], s.pos[2],
         s.pos_sigma3[0], s.pos_sigma3[1], s.pos_sigma3[2], s.vel[0], s.vel[1], s.vel[2],
         s.rest_detected ? 1 : 0, s.gps_enu[0], s.gps_enu[1], s.gps_enu[2],
         s.gps_fix ? "fix" : (s.gps_healthy ? "searching" : "absent"), s.gps_satellites,
@@ -80,6 +101,19 @@ void LogPeriodically(const EstimatorSnapshot& s) {
 
 void setup() {
     Serial.begin(115200);
+
+    // Never let logging block the loop.
+    //
+    // The USB-serial peripheral's write() waits for room in its ring buffer --
+    // by default up to 100 ms, retried up to twenty times, so nearly two
+    // seconds per call. Nothing drains that buffer unless a serial monitor is
+    // open, so once a second the status line below stalled loop() for most of
+    // a second and it fell to about 1 Hz. The web server is serviced from
+    // loop(), so a WebSocket handshake that takes 20 ms with a monitor
+    // attached took fifteen seconds without one -- exactly the untethered case
+    // this board is built for. A zero timeout drops log output instead of
+    // waiting, which is the right trade for a diagnostic channel.
+    Serial.setTxTimeoutMs(0);
     // The native-USB CDC port enumerates after boot; this keeps the banner and
     // any start-up errors from being lost.
     delay(1500);
@@ -95,6 +129,8 @@ void setup() {
 }
 
 void loop() {
+    loop_hz = MeasureLoopRate();
+
     WebServerLoop();
 
     EstimatorSnapshot snapshot;

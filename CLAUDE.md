@@ -37,6 +37,13 @@ on the bench before it was caught. `imu.cpp` probes the chip's I2C address every
 250 ms instead; do not replace that with a check of the driver's return value.
 The GPS has the same probe for the same reason.
 
+**Never let `Serial` block the loop.** `Serial.setTxTimeoutMs(0)` in `setup()`
+is load-bearing, not tidying. The USB-serial `write()` waits up to ~2 s when no
+monitor is draining the port, and `loop()` — which services the web server —
+then runs at about 1 Hz. Symptom: everything is fine over USB and the dashboard
+is unusable untethered (a 15 ms WebSocket handshake becomes 15 s). If you add
+logging to `loop()`, this is why it must stay non-blocking.
+
 **VQF is vendored, not implemented here.** `lib/vqf/` is verbatim from
 <https://github.com/dlaidig/vqf> (MIT). Don't edit it; treat it as a black box
 with the API in `vqf.hpp`.
@@ -66,6 +73,7 @@ tick jitter.
 | Sensor reconnect behaviour | `src/imu.cpp`, `src/gps.cpp`, `src/i2c_bus.cpp` |
 | Status LED colours and patterns | `src/status_led.cpp`, `EvaluateStatus()` in `src/main.cpp` |
 | Behaviour when a sensor drops out | `PredictCoasting()`/`IsDiverged()` in `src/nav_filter.h` |
+| Magnetometer hard/soft-iron calibration | `src/mag_cal.h`, driven from `src/imu.cpp` |
 | Dashboard panels and plotting | `web/index.html` (gzipped into flash by `scripts/embed_web.py`) |
 
 ## Commands

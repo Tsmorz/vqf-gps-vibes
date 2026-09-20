@@ -97,6 +97,34 @@ Sliders are logarithmic, because these sigmas span orders of magnitude.
 Changes take effect on the next filter tick. Nothing is persisted — a reboot
 returns to the defaults in `include/config.h`.
 
+## Magnetometer calibration
+
+A raw magnetometer measures the Earth's field **plus the board's own**. On this
+hardware the uncalibrated LIS3MDL reads about 86 µT where the true local field
+is about 48.6 µT, nearly all of the excess a fixed offset on one axis.
+
+VQF cannot remove this: its magnetic disturbance rejection is built for
+transient anomalies in a field it assumes is otherwise homogeneous, whereas a
+hard-iron offset is fixed in the sensor frame and rotates with it. The effect is
+confined to heading — measured on the bench, roll and pitch held to 0.01° while
+yaw wandered 7°, because the horizontal component heading is derived from had
+been squashed from ~21 µT to 7.4 µT.
+
+To calibrate: press **Calibrate magnetometer** on the dashboard, slowly turn the
+board through every orientation including upside down until it reaches 100 %,
+and press **Finish**. The fit is stored in NVS and restored on boot. A sweep that
+only spins about one axis is refused, since it would leave the other two
+uncorrected.
+
+The `|mag|` readout next to the button is the quickest sanity check: after a good
+calibration it should sit near your local field strength (25–65 µT depending on
+latitude) and stay roughly constant as you turn the board.
+
+Accelerometer scale is a separate, smaller matter: this board reads |accel| ≈
+10.12 m/s² at rest against a true 9.807, about 3 % high. That is within the
+LSM6DSOX's sensitivity tolerance, and the filter's accelerometer-bias states
+absorb it once GPS or zero-velocity updates make them observable.
+
 ## Status LED
 
 The onboard RGB LED (WS2812B on GPIO 40, power rail gated by GPIO 39) is the only
@@ -201,6 +229,18 @@ as exceptional:
   nothing across a gap in the data.
 - Inbound commands are parsed tolerantly (whitespace around colons, `true`/`false`
   as well as `1`/`0`), so the protocol is not tied to one particular JSON encoder.
+
+- **Serial logging never blocks the loop.** The USB-serial peripheral's
+  `write()` waits for room in its ring buffer — 100 ms by default, retried up to
+  twenty times, so nearly two seconds per call — and nothing drains that buffer
+  unless a serial monitor is open. The once-a-second status line was therefore
+  stalling `loop()` to about 1 Hz whenever the board ran untethered, which is
+  its normal state. Since the web server is serviced from `loop()`, a WebSocket
+  handshake that takes 15 ms with a monitor attached took **15 seconds**
+  without one. `Serial.setTxTimeoutMs(0)` drops log output instead of waiting.
+- WiFi modem sleep is disabled. Left on, the radio sleeps between the router's
+  DTIM beacons and incoming packets sit buffered — 58–97 ms ping times on a LAN.
+  The cost is higher idle current, which matters on battery.
 
 Errors are reported as status returns, not C++ exceptions — exceptions in a 200 Hz
 real-time task on an MCU would cost far more than they are worth here.

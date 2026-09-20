@@ -147,6 +147,12 @@ void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz
     next.rest_detected = vqf.getRestDetected();
     next.mag_disturbed = vqf.getMagDistDetected();
 
+    const MagCalStatus mag_status = ImuMagCalStatus();
+    next.mag_calibrated = mag_status.calibrated;
+    next.mag_collecting = mag_status.collecting;
+    next.mag_cal_progress = mag_status.progress;
+    next.mag_field_ut = mag_status.field_ut;
+
     const GpsSample fix = GpsLatest();
     next.gps_fix = fix.has_fix;
     next.gps_satellites = fix.satellites;

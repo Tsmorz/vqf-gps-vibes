@@ -102,6 +102,22 @@ select{background:#21262d;color:var(--text);border:1px solid var(--line);
     <span style="color:var(--z)"><b>z</b></span>
     <span style="color:var(--dim)">accel m/s² · gyro rad/s · mag µT</span>
   </div>
+  <div class="readout">
+    <div><span>|accel|</span><span id="r-anorm">—</span></div>
+    <div><span>|mag|</span><span id="r-mnorm">—</span></div>
+    <div><span>mag cal</span><span id="r-magcal">—</span></div>
+  </div>
+  <div class="row">
+    <button id="btn-magcal">Calibrate magnetometer</button>
+    <button id="btn-magclear">Clear</button>
+  </div>
+  <p class="note" id="magcal-note">
+    The magnetometer measures the Earth's field plus the board's own. Until it
+    is calibrated that offset distorts the horizontal component heading is
+    derived from, so yaw is noisy while roll and pitch are unaffected. Press
+    Calibrate, then slowly turn the board through every orientation — including
+    upside down — until it reaches 100 %, and press it again to finish.
+  </p>
 </section>
 
 <section>
@@ -299,7 +315,10 @@ function niceStep(span){
 // ── Time-series chart ──────────────────────────────────────────────────────
 // `series` is [{key, index, color}]; `band` optionally names a 3σ field to
 // shade around the first series.
-function drawSeries(canvas, series, band, label){
+// `minSpan` stops the y-axis collapsing onto the noise floor. Without it a
+// gyro resting at 0.002 rad/s gets autoscaled to fill the panel and looks
+// violent, when what is actually on screen is a sensor behaving perfectly.
+function drawSeries(canvas, series, band, label, minSpan){
   const {ctx, w, h} = prepare(canvas);
   const pad = {l:44, r:6, t:6, b:14};
   const now = history.length ? history[history.length-1].t : 0;
@@ -338,6 +357,10 @@ function drawSeries(canvas, series, band, label){
   if (hi - lo < 1e-6){ hi += 0.5; lo -= 0.5; }
   const margin = (hi - lo) * 0.08;
   lo -= margin; hi += margin;
+  if (minSpan && hi - lo < minSpan){
+    const mid = (hi + lo) / 2;
+    lo = mid - minSpan / 2; hi = mid + minSpan / 2;
+  }
 
   const X = t => pad.l + (t - from) / windowSec * (w - pad.l - pad.r);
   const Y = v => pad.t + (hi - v) / (hi - lo) * (h - pad.t - pad.b);
@@ -628,6 +651,14 @@ function bindControls(){
     e.target.textContent = paused ? 'Resume' : 'Pause';
   });
 
+  // One button drives the whole sweep: the first press starts collecting, the
+  // second fits and stores the result.
+  $('btn-magcal').addEventListener('click', () => {
+    const busy = latest && latest.magcal && latest.magcal.busy;
+    send({cmd:'magcal', action: busy ? 'finish' : 'start'});
+  });
+  $('btn-magclear').addEventListener('click', () => send({cmd:'magcal', action:'clear'}));
+
   // Drag-to-orbit on both 3D panels.
   for (const [id, cam] of [['cv-att', view.att], ['cv-pos3d', view.pos]]){
     const canvas = $(id);
@@ -653,18 +684,20 @@ function render(){
     drawAttitude();
     drawPosition3d();
 
+    // Minimum spans are about a tenth of each sensor's working range, so real
+    // motion still fills the panel but a resting sensor reads as a flat line.
     drawSeries($('cv-acc'), [
       {key:'a', index:0, color:'#ff6b6b'},
       {key:'a', index:1, color:'#51cf66'},
-      {key:'a', index:2, color:'#4dabf7'}], null, 'accel');
+      {key:'a', index:2, color:'#4dabf7'}], null, 'accel m/s²', 2.0);
     drawSeries($('cv-gyr'), [
       {key:'g', index:0, color:'#ff6b6b'},
       {key:'g', index:1, color:'#51cf66'},
-      {key:'g', index:2, color:'#4dabf7'}], null, 'gyro');
+      {key:'g', index:2, color:'#4dabf7'}], null, 'gyro rad/s', 0.5);
     drawSeries($('cv-mag'), [
       {key:'m', index:0, color:'#ff6b6b'},
       {key:'m', index:1, color:'#51cf66'},
-      {key:'m', index:2, color:'#4dabf7'}], null, 'mag');
+      {key:'m', index:2, color:'#4dabf7'}], null, 'mag µT', 20.0);
 
     drawSeries($('cv-pe'), [{key:'p', index:0, color:'#d29922'}], 'p3s', 'east');
     drawSeries($('cv-pn'), [{key:'p', index:1, color:'#d29922'}], 'p3s', 'north');
@@ -673,6 +706,20 @@ function render(){
     drawSeries($('cv-ve'), [{key:'v', index:0, color:'#d29922'}], 'v3s', 'vE');
     drawSeries($('cv-vn'), [{key:'v', index:1, color:'#d29922'}], 'v3s', 'vN');
     drawSeries($('cv-vu'), [{key:'v', index:2, color:'#d29922'}], 'v3s', 'vU');
+
+    // |accel| should sit near 9.81 at rest and |mag| near the local field
+    // strength (roughly 25-65 µT depending on latitude). Both are shown
+    // because a wrong magnitude is the quickest way to spot a bad calibration.
+    const a = latest.imu.a, m = latest.imu.m;
+    const mag3 = v => Math.hypot(v[0], v[1], v[2]);
+    $('r-anorm').textContent = mag3(a).toFixed(2) + ' m/s²';
+    $('r-mnorm').textContent = mag3(m).toFixed(1) + ' µT';
+
+    const cal = latest.magcal;
+    $('r-magcal').textContent = cal.busy
+      ? Math.round(cal.prog * 100) + '% — keep turning'
+      : (cal.done ? 'calibrated' : 'not calibrated');
+    $('btn-magcal').textContent = cal.busy ? 'Finish calibration' : 'Calibrate magnetometer';
 
     const nav = latest.nav;
     $('r-ve').textContent = nav.v[0].toFixed(2) + ' ±' + nav.v3s[0].toFixed(2);

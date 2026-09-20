@@ -8,6 +8,7 @@
 
 #include "config.h"
 #include "generated/web_index.h"
+#include "imu.h"
 #include "telemetry.h"
 #include "wifi_link.h"
 
@@ -120,6 +121,18 @@ void HandleParamsCommand(const char* json) {
     EstimatorSetParams(params);
 }
 
+// Starts, finishes or clears a magnetometer calibration sweep. See mag_cal.h
+// for what the sweep is correcting and why VQF cannot do it on its own.
+void HandleMagCalCommand(const char* json) {
+    if (HasStringValue(json, "action", "start")) {
+        ImuMagCalStart();
+    } else if (HasStringValue(json, "action", "finish")) {
+        ImuMagCalFinish();
+    } else if (HasStringValue(json, "action", "clear")) {
+        ImuMagCalClear();
+    }
+}
+
 void OnSocketEvent(uint8_t client, WStype_t type, uint8_t* payload, size_t length) {
     if (type == WStype_CONNECTED) {
         connected_clients++;
@@ -148,6 +161,8 @@ void OnSocketEvent(uint8_t client, WStype_t type, uint8_t* payload, size_t lengt
         HandleParamsCommand(message);
     } else if (HasStringValue(message, "cmd", "reset")) {
         EstimatorResetFilter();
+    } else if (HasStringValue(message, "cmd", "magcal")) {
+        HandleMagCalCommand(message);
     }
 }
 
