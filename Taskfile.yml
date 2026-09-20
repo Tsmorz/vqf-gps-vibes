@@ -1,0 +1,107 @@
+version: '3'
+
+vars:
+  ENV: feathers3
+  # Everything clang-format owns. lib/vqf is vendored upstream -- left alone.
+  SOURCES: src/*.cpp src/*.h include/*.h tools/*/*.cpp test/*/*.cpp
+
+tasks:
+  default:
+    desc: "List available tasks"
+    cmds:
+      - task --list
+    silent: true
+
+  init:
+    desc: "First-time setup: check tools, fetch toolchains and libraries"
+    cmds:
+      - |
+        missing=0
+        for tool in pio clang-format; do
+          command -v $tool >/dev/null || { echo "MISSING: $tool"; missing=1; }
+        done
+        if [ $missing = 1 ]; then
+          echo "Install with: pip install platformio && brew install clang-format"
+          exit 1
+        fi
+      - pio pkg install -e {{.ENV}}
+      - pio pkg install -e native
+      - echo "Ready. Next{{":"}} task ci"
+
+  build:
+    desc: "Compile the firmware"
+    cmds:
+      - pio run -e {{.ENV}}
+
+  flash:
+    desc: "Build, flash, then open the serial monitor (Ctrl+C to exit)"
+    cmds:
+      - pkill -f "pio device monitor" || true
+      - pio run -e {{.ENV}} -t upload
+      - pio device monitor -e {{.ENV}}
+
+  upload:
+    desc: "Build and flash without opening the monitor"
+    cmds:
+      - pkill -f "pio device monitor" || true
+      - pio run -e {{.ENV}} -t upload
+
+  monitor:
+    desc: "Open the serial monitor only (no reflash)"
+    cmds:
+      - pio device monitor -e {{.ENV}}
+
+  scan:
+    desc: "Flash the I2C/LED bring-up probe -- use when a STEMMA cable is suspect"
+    cmds:
+      - pkill -f "pio device monitor" || true
+      - pio run -e i2cscan -t upload
+      - pio device monitor -e i2cscan
+
+  test:
+    desc: "Unit tests on this machine (nav filter, geo, telemetry) -- no board needed"
+    cmds:
+      - pio test -e native
+
+  test-ui:
+    desc: "Run the dashboard's JavaScript headlessly against a real telemetry frame"
+    cmds:
+      # The frame comes from the firmware's own encoder, so this checks the
+      # firmware and the dashboard still agree on the schema.
+      - mkdir -p .pio/uicheck
+      - pio test -e native -f test_telemetry -vv | grep -m1 '^FRAME:' | sed 's/^FRAME://' > .pio/uicheck/frame.json
+      - node tools/check_dashboard.mjs .pio/uicheck/frame.json
+
+  lint:
+    desc: "Static analysis (cppcheck) -- fails on HIGH or MEDIUM findings"
+    cmds:
+      - pio check -e {{.ENV}} --skip-packages --fail-on-defect high --fail-on-defect medium
+
+  format:
+    desc: "Format all sources with clang-format"
+    cmds:
+      - clang-format -i {{.SOURCES}}
+
+  format-check:
+    desc: "Fail if any source is not clang-formatted"
+    cmds:
+      - clang-format --dry-run --Werror {{.SOURCES}}
+
+  ci:
+    desc: "Everything CI runs: format-check, lint, test, build"
+    cmds:
+      - task: format-check
+      - task: lint
+      - task: test
+      - task: test-ui
+      - task: build
+
+  clean:
+    desc: "Remove build artifacts"
+    cmds:
+      - pio run -e {{.ENV}} -t clean
+
+  erase:
+    desc: "Erase all flash, including saved settings"
+    cmds:
+      - pio run -e {{.ENV}} -t erase
