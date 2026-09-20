@@ -3,13 +3,13 @@
 #include <Arduino.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
-#include <WiFi.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "config.h"
 #include "generated/web_index.h"
 #include "telemetry.h"
+#include "wifi_link.h"
 
 namespace {
 
@@ -117,20 +117,17 @@ void HandleRoot() {
 }  // namespace
 
 void WebServerBegin() {
-    WiFi.mode(WIFI_AP);
-    if (!WiFi.softAP(AP_SSID, AP_PASS, AP_CHANNEL)) {
-        Serial.println("[web] FATAL: could not start the access point");
-        return;
-    }
-    Serial.printf("[web] access point \"%s\" up at http://%s/\n", AP_SSID,
-                  WiFi.softAPIP().toString().c_str());
+    const WifiMode mode = WifiLinkBegin();
 
     http_server.on("/", HandleRoot);
-    // Phones probe these URLs to decide whether a network has internet. An
-    // explicit 204 stops the "sign in to WiFi" pop-up from hijacking the
-    // browser when you connect to the board outdoors.
-    http_server.on("/generate_204", []() { http_server.send(204); });
-    http_server.on("/hotspot-detect.html", HandleRoot);
+    if (mode == WifiMode::kAccessPoint) {
+        // Phones probe these URLs to decide whether a network has internet. An
+        // explicit 204 stops the "sign in to WiFi" pop-up from hijacking the
+        // browser when you connect to the board outdoors. Only registered in
+        // access-point mode -- on a real network these belong to the router.
+        http_server.on("/generate_204", []() { http_server.send(204); });
+        http_server.on("/hotspot-detect.html", HandleRoot);
+    }
     http_server.onNotFound(HandleRoot);
     http_server.begin();
 

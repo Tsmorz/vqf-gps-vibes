@@ -96,9 +96,35 @@
 #define SENSOR_RETRY_INTERVAL_MS 2000
 #endif
 
-// ── WiFi access point ────────────────────────────────────────────────────────
-// The board hosts its own network; no router involved. Connect to this SSID
-// and open http://192.168.4.1/.
+// ── WiFi ─────────────────────────────────────────────────────────────────────
+// Credentials for your own network live in src/secrets.h, which is git-ignored.
+// Copy src/secrets.example.h over it. With no secrets.h (or an empty SSID) the
+// board goes straight to access-point mode.
+#ifdef __has_include
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+#endif
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
+#define WIFI_PASS ""
+#endif
+
+// How long to wait for the configured network before giving up and starting
+// the access point. Short enough not to be annoying when carrying the board
+// outside, long enough for a router to answer a cold associate.
+#ifndef WIFI_CONNECT_TIMEOUT_MS
+#define WIFI_CONNECT_TIMEOUT_MS 8000
+#endif
+
+// Advertised over mDNS in station mode, so the dashboard has a stable address:
+// http://vqf-gps.local/
+#ifndef MDNS_HOSTNAME
+#define MDNS_HOSTNAME "vqf-gps"
+#endif
+
+// Fallback access point, used when the network above is out of range. Connect
+// to this SSID and open http://192.168.4.1/.
 #ifndef AP_SSID
 #define AP_SSID "vqf-gps"
 #endif

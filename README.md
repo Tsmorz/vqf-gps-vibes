@@ -30,12 +30,25 @@ FreeRTOS task, so the GPS and the IMU can never interleave transactions.
 ```bash
 brew install go-task clang-format node   # node is only needed for `task test-ui`
 pip install platformio
-task init            # fetch toolchains and libraries
+task init            # fetch toolchains, libraries, and create src/secrets.h
 task flash           # build, flash, open the serial monitor
 ```
 
-Then join the WiFi network **`vqf-gps`** (password `vqfgps123`) and open
-<http://192.168.4.1/>.
+## Networking
+
+The board picks its own mode on boot, so the same firmware works at a desk and
+in a field:
+
+- **Station** — if `WIFI_SSID` in `src/secrets.h` (git-ignored, created by
+  `task init`) names a network that answers within 8 s, the board joins it and
+  advertises itself over mDNS at **<http://vqf-gps.local/>**. Convenient at a
+  desk: the dashboard is reachable from a machine that still has internet.
+- **Access point** — otherwise, which is what happens the moment you carry the
+  board out of range, it serves its own network **`vqf-gps`** (password
+  `vqfgps123`) at **<http://192.168.4.1/>**.
+
+Leave `WIFI_SSID` empty to always be an access point. The serial log prints
+which mode won and the address to open.
 
 ## Commands
 
@@ -117,7 +130,9 @@ src/
   gps.cpp/.h          PA1010D, with reconnect and presence detection
   i2c_bus.cpp/.h      shared bus init and stuck-bus recovery
   telemetry.cpp/.h    snapshot -> the JSON frame the dashboard reads
-  web_server.cpp/.h   access point, HTTP, WebSocket
+  wifi_link.cpp/.h    joins your network, falls back to the board's own AP
+  web_server.cpp/.h   HTTP and WebSocket
+  secrets.example.h   template for the git-ignored src/secrets.h
 web/index.html        the dashboard, gzipped into flash at build time
 tools/i2cscan/        the bring-up probe behind `task scan`
 tools/check_dashboard.mjs   headless harness behind `task test-ui`

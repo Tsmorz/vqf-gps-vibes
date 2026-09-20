@@ -50,6 +50,8 @@ tick jitter.
 | To change... | Look at |
 |---|---|
 | Pins, rates, filter defaults, AP credentials | `include/config.h` |
+| WiFi credentials (git-ignored) | `src/secrets.h`, template in `src/secrets.example.h` |
+| Station vs access-point selection | `src/wifi_link.cpp` |
 | The EKF itself (states, Jacobian, process noise) | `src/nav_filter.h` |
 | How VQF and the EKF are driven, and the task loop | `src/estimator.cpp` |
 | Which knobs the dashboard exposes | `src/filter_params.h` + `KNOBS` in `web/index.html` |

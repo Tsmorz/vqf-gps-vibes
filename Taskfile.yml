@@ -24,6 +24,14 @@ tasks:
           echo "Install with: pip install platformio && brew install clang-format"
           exit 1
         fi
+      - |
+        if [ -f src/secrets.h ]; then
+          echo "src/secrets.h exists"
+        else
+          cp src/secrets.example.h src/secrets.h
+          echo "Created src/secrets.h -- set WIFI_SSID/WIFI_PASS to use your"
+          echo "own network, or leave them empty for access-point mode."
+        fi
       - pio pkg install -e {{.ENV}}
       - pio pkg install -e native
       - echo "Ready. Next{{":"}} task ci"
