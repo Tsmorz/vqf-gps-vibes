@@ -91,6 +91,33 @@ void SaveMagCalibration(const MagCalibration& cal) {
 constexpr uint32_t kPresenceCheckIntervalMs = 250;
 uint32_t last_presence_check_ms = 0;
 
+// Consecutive byte-identical magnetometer readings tolerated before the chip
+// is presumed to have stopped converting.
+//
+// A live magnetometer always dithers in its low bits, so identical readings
+// for this long cannot happen by chance. Repeats themselves are normal -- the
+// part runs at 155 Hz and is read at 200 Hz -- which is why the threshold is
+// over a second's worth rather than a handful. Without this a frozen chip
+// reports healthy forever: it still acknowledges its address, and the driver
+// still returns success, exactly as when its cable is pulled.
+constexpr int kMagStaleSamples = 250;
+float last_mag_reading[3] = {0.0f, 0.0f, 0.0f};
+int identical_mag_samples = 0;
+
+// Returns true if the magnetometer has produced a genuinely new reading.
+bool MagIsLive(const float mag[3]) {
+    const bool same = mag[0] == last_mag_reading[0] && mag[1] == last_mag_reading[1] &&
+                      mag[2] == last_mag_reading[2];
+    if (!same) {
+        last_mag_reading[0] = mag[0];
+        last_mag_reading[1] = mag[1];
+        last_mag_reading[2] = mag[2];
+        identical_mag_samples = 0;
+        return true;
+    }
+    return ++identical_mag_samples < kMagStaleSamples;
+}
+
 // The bus generation these chips were initialised against. A bus recovery
 // invalidates their device handles, and the Adafruit driver cannot tell us --
 // it reports success while every transfer returns ESP_ERR_INVALID_STATE and
@@ -113,8 +140,14 @@ void ConfigureAccelGyro() {
 
 void ConfigureMagnetometer() {
     lis.setRange(LIS3MDL_RANGE_4_GAUSS);
+    // setDataRate() picks the performance mode itself -- 155 Hz is only
+    // reachable in ultra-high-performance mode, so the library switches to it.
+    // Calling setPerformanceMode() afterwards overwrites that into a
+    // configuration the part cannot satisfy, and it stops converting: the
+    // readings freeze at one value while the chip still acknowledges on the
+    // bus and the driver still reports success. Do not add a
+    // setPerformanceMode() call here.
     lis.setDataRate(LIS3MDL_DATARATE_155_HZ);
-    lis.setPerformanceMode(LIS3MDL_MEDIUMMODE);
     lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
 }
 
@@ -289,6 +322,17 @@ bool ImuRead(ImuSample& out) {
             out.mag[0] = mag_event.magnetic.x;
             out.mag[1] = mag_event.magnetic.y;
             out.mag[2] = mag_event.magnetic.z;
+
+            if (!MagIsLive(out.mag)) {
+                Serial.println("[imu] LIS3MDL has stopped converting -- re-initialising");
+                identical_mag_samples = 0;
+                magnetometer.healthy = false;
+                magnetometer.last_retry_ms = 0;
+                magnetometer.total_failures++;
+                out.mag[0] = out.mag[1] = out.mag[2] = 0.0f;
+                out.mag_valid = false;
+                return out.accel_gyro_valid;
+            }
 
             if (!sensor_limits::MagLooksValid(out.mag)) {
                 // Clear the reading as well as flagging it. Otherwise the
