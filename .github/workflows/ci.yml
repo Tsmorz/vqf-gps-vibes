@@ -27,6 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: pip install clang-format==${{ env.CLANG_FORMAT_VERSION }}
       - run: task format-check
 
@@ -36,6 +38,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.github/actions/setup-pio
       - run: cp src/secrets.example.h src/secrets.h
       - run: task lint
@@ -46,6 +50,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.github/actions/setup-pio
       - run: pip install gcovr
       # Runs the same unit tests as `task test`, instrumented, then gates on 90% lines.
@@ -68,6 +74,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
