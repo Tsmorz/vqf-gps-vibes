@@ -6,54 +6,80 @@
 <title>VQF + GPS</title>
 <style>
 :root{
-  --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3; --dim:#8b949e;
-  --x:#ff6b6b; --y:#51cf66; --z:#4dabf7; --accent:#d29922;
+  color-scheme:dark;
+  --bg:#0b0e14; --panel:#12161d; --well:#0b0e14; --line:#222a35; --line-soft:#1a212b;
+  --text:#e6edf3; --dim:#8b96a5; --faint:#5f6b7a;
+  --x:#ff6b6b; --y:#51cf66; --z:#4dabf7; --accent:#e0a526;
   --ok:#3fb950; --warn:#d29922; --err:#f85149;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --radius:12px;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);
-  font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;
-  padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);
-  position:sticky;top:0;z-index:10}
-h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px}
+  font:13px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;
+  padding:12px 20px;background:rgba(18,22,29,.85);
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto}
-.chip{padding:2px 8px;border-radius:10px;border:1px solid var(--line);
-  background:#0d1117;color:var(--dim);white-space:nowrap}
-.chip.ok{color:var(--ok);border-color:#1f6f35}
-.chip.warn{color:var(--warn);border-color:#7a5c14}
-.chip.err{color:var(--err);border-color:#8b2c26}
-main{display:grid;gap:12px;padding:12px;
-  grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
-section{background:var(--panel);border:1px solid var(--line);border-radius:8px;
-  padding:10px 12px 12px;min-width:0}
-section h2{font-size:12px;margin:0 0 8px;color:var(--dim);font-weight:600;
-  text-transform:uppercase;letter-spacing:.6px;display:flex;align-items:center;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;
+  border-radius:999px;border:1px solid var(--line);background:var(--well);
+  color:var(--dim);font-size:12px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;
+  opacity:.9}
+.chip.ok{color:var(--ok);border-color:#1f4a2c}
+.chip.warn{color:var(--warn);border-color:#5a4513}
+.chip.err{color:var(--err);border-color:#6b2622}
+main{display:grid;gap:16px;padding:16px 20px 32px;max-width:1600px;margin:0 auto;
+  grid-template-columns:repeat(auto-fit,minmax(360px,1fr))}
+section{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  padding:14px 16px 16px;min-width:0;box-shadow:0 1px 2px rgba(0,0,0,.3)}
+section h2{font-size:11px;margin:0 0 12px;color:var(--dim);font-weight:650;
+  text-transform:uppercase;letter-spacing:.09em;display:flex;align-items:center;gap:8px}
 section h2 .hint{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0;
-  color:#6e7681}
-canvas{width:100%;display:block;border-radius:4px;touch-action:none}
-.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));
-  gap:4px 10px;margin-top:8px}
-.readout div{display:flex;justify-content:space-between;gap:6px;
-  border-bottom:1px dotted #21262d;padding:1px 0}
-.readout span:first-child{color:var(--dim)}
-.legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px;color:var(--dim)}
-.legend b{font-weight:600}
-.knob{margin:0 0 11px}
-.knob label{display:flex;justify-content:space-between;gap:8px;margin-bottom:3px}
+  color:var(--faint);font-size:12px}
+canvas{width:100%;display:block;border-radius:8px;touch-action:none;
+  background:var(--well);border:1px solid var(--line-soft)}
+canvas+canvas{margin-top:6px}
+.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
+  gap:6px;margin-top:12px}
+.readout div{display:flex;flex-direction:column-reverse;gap:1px;
+  background:var(--well);border:1px solid var(--line-soft);border-radius:8px;
+  padding:6px 10px}
+.readout span:first-child{color:var(--faint);font-size:11px}
+.readout span:last-child{font-family:var(--mono);font-size:13px;
+  font-variant-numeric:tabular-nums}
+.legend{display:flex;gap:4px 14px;flex-wrap:wrap;margin-top:10px;color:var(--dim);
+  font-size:12px}
+.legend b{font-weight:700;font-family:var(--mono)}
+.knob{margin:0 0 14px}
+.knob label{display:flex;justify-content:space-between;gap:8px;margin-bottom:4px}
 .knob .name{color:var(--text)}
-.knob .val{color:var(--accent)}
-.knob .desc{color:#6e7681;font-size:11px;margin-top:2px;line-height:1.35}
+.knob .val{color:var(--accent);font-family:var(--mono);font-variant-numeric:tabular-nums}
+.knob .desc{color:var(--faint);font-size:11.5px;margin-top:3px;line-height:1.4}
 input[type=range]{width:100%;accent-color:var(--accent);margin:0}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
-button{background:#21262d;color:var(--text);border:1px solid var(--line);
-  border-radius:6px;padding:6px 12px;cursor:pointer;font:inherit}
-button:hover{background:#30363d}
-button.primary{border-color:#8b2c26;color:#ff9c96}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+button{background:#1a212b;color:var(--text);border:1px solid var(--line);
+  border-radius:8px;padding:6px 14px;cursor:pointer;font:inherit;
+  transition:background .12s,border-color .12s}
+button:hover{background:#232c38;border-color:#33404f}
+button:active{transform:translateY(1px)}
+button:focus-visible,select:focus-visible,input:focus-visible{
+  outline:2px solid var(--z);outline-offset:2px}
+button.primary{border-color:#6b2622;color:#ff9c96}
+button.primary:hover{background:#2a1a1c;border-color:#8b2c26}
 .toggle{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
-select{background:#21262d;color:var(--text);border:1px solid var(--line);
-  border-radius:6px;padding:5px 8px;font:inherit}
-.note{color:#6e7681;font-size:11px;margin-top:8px;line-height:1.4}
+.toggle input{accent-color:var(--accent)}
+select{background:#1a212b;color:var(--text);border:1px solid var(--line);
+  border-radius:8px;padding:6px 10px;font:inherit}
+.note{color:var(--faint);font-size:12px;margin:12px 0 0;line-height:1.5}
+@media (max-width:480px){
+  header{padding:10px 12px}
+  main{padding:12px;gap:12px;grid-template-columns:minmax(0,1fr)}
+  .chips{margin-left:0}
+}
 </style>
 </head>
 <body>
@@ -363,11 +389,11 @@ function drawSeries(canvas, series, band, label, minSpan){
   const from = now - windowSec;
   const points = history.filter(r => r.t >= from);
 
-  ctx.fillStyle = '#0d1117';
+  ctx.fillStyle = '#0b0e14';
   ctx.fillRect(0, 0, w, h);
 
   if (points.length < 2){
-    ctx.fillStyle = '#6e7681';
+    ctx.fillStyle = '#5f6b7a';
     ctx.fillText('waiting for data…', pad.l, h/2);
     return;
   }
@@ -407,10 +433,10 @@ function drawSeries(canvas, series, band, label, minSpan){
   const Y = v => pad.t + (hi - v) / (hi - lo) * (h - pad.t - pad.b);
 
   // Gridlines and value labels.
-  ctx.strokeStyle = '#21262d';
-  ctx.fillStyle = '#6e7681';
+  ctx.strokeStyle = '#1a212b';
+  ctx.fillStyle = '#5f6b7a';
   ctx.lineWidth = 1;
-  ctx.font = '10px ui-monospace,monospace';
+  ctx.font = '10px ui-monospace,Menlo,monospace';
   const step = niceStep(hi - lo);
   for (let v = Math.ceil(lo/step)*step; v <= hi; v += step){
     const y = Y(v);
@@ -462,7 +488,7 @@ function drawSeries(canvas, series, band, label, minSpan){
   }
 
   if (label){
-    ctx.fillStyle = '#8b949e';
+    ctx.fillStyle = '#8b96a5';
     ctx.fillText(label, w - pad.r - ctx.measureText(label).width - 2, pad.t + 9);
   }
 }
@@ -503,7 +529,7 @@ function line3d(ctx, cam, a, b, cx, cy, scale, color, width){
 function drawAttitude(){
   const canvas = $('cv-att');
   const {ctx, w, h} = prepare(canvas);
-  ctx.fillStyle = '#0d1117'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, w, h);
   if (!latest) return;
 
   const cx = w/2, cy = h/2, scale = Math.min(w, h) * 0.32;
@@ -513,10 +539,10 @@ function drawAttitude(){
   const worldNames = ['E', 'N', 'U'];
   for (let i = 0; i < 3; i++){
     const axis = [0,0,0]; axis[i] = 1.25;
-    line3d(ctx, cam, [0,0,0], axis, cx, cy, scale, '#30363d', 1);
+    line3d(ctx, cam, [0,0,0], axis, cx, cy, scale, '#2a3340', 1);
     const tip = project(axis, cam, cx, cy, scale);
-    ctx.fillStyle = '#6e7681';
-    ctx.font = '10px ui-monospace,monospace';
+    ctx.fillStyle = '#5f6b7a';
+    ctx.font = '10px ui-monospace,Menlo,monospace';
     ctx.fillText(worldNames[i], tip[0] + 3, tip[1]);
   }
 
@@ -531,7 +557,7 @@ function drawAttitude(){
     const tip = project(rotated, cam, cx, cy, scale);
     ctx.fillStyle = colors[i];
     ctx.beginPath(); ctx.arc(tip[0], tip[1], 3, 0, 7); ctx.fill();
-    ctx.font = 'bold 11px ui-monospace,monospace';
+    ctx.font = 'bold 11px ui-monospace,Menlo,monospace';
     ctx.fillText(names[i], tip[0] + 5, tip[1] - 4);
   }
 
@@ -559,7 +585,7 @@ function drawAttitude(){
 function drawPosition3d(){
   const canvas = $('cv-pos3d');
   const {ctx, w, h} = prepare(canvas);
-  ctx.fillStyle = '#0d1117'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, w, h);
   if (!latest) return;
 
   const now = history.length ? history[history.length-1].t : 0;
@@ -582,8 +608,8 @@ function drawPosition3d(){
   const step = niceStep(extent * 2);
   ctx.lineWidth = 1;
   for (let g = -Math.ceil(extent/step)*step; g <= extent; g += step){
-    line3d(ctx, cam, [g,-extent,0], [g,extent,0], cx, cy, scale, '#1c2128');
-    line3d(ctx, cam, [-extent,g,0], [extent,g,0], cx, cy, scale, '#1c2128');
+    line3d(ctx, cam, [g,-extent,0], [g,extent,0], cx, cy, scale, '#151b23');
+    line3d(ctx, cam, [-extent,g,0], [extent,g,0], cx, cy, scale, '#151b23');
   }
 
   // Axis-aligned 3σ ellipsoid, drawn as its three principal rings. The filter
@@ -605,7 +631,7 @@ function drawPosition3d(){
   }
 
   // Estimated trajectory.
-  ctx.strokeStyle = '#d29922';
+  ctx.strokeStyle = '#e0a526';
   ctx.lineWidth = 1.6;
   ctx.beginPath();
   points.forEach((r, i) => {
@@ -627,8 +653,8 @@ function drawPosition3d(){
   ctx.fillStyle = '#ffd866';
   ctx.beginPath(); ctx.arc(here[0], here[1], 4, 0, 7); ctx.fill();
 
-  ctx.fillStyle = '#6e7681';
-  ctx.font = '10px ui-monospace,monospace';
+  ctx.fillStyle = '#5f6b7a';
+  ctx.font = '10px ui-monospace,Menlo,monospace';
   ctx.fillText('grid ' + step.toFixed(step < 1 ? 2 : 0) + ' m', 6, h - 6);
 
   const g = latest.gps;
@@ -747,18 +773,18 @@ function render(){
       {key:'m', index:1, color:'#51cf66'},
       {key:'m', index:2, color:'#4dabf7'}], null, 'mag µT', 20.0);
 
-    drawSeries($('cv-pe'), [{key:'p', index:0, color:'#d29922'}], 'p3s', 'east');
-    drawSeries($('cv-pn'), [{key:'p', index:1, color:'#d29922'}], 'p3s', 'north');
-    drawSeries($('cv-pu'), [{key:'p', index:2, color:'#d29922'}], 'p3s', 'up');
+    drawSeries($('cv-pe'), [{key:'p', index:0, color:'#e0a526'}], 'p3s', 'east');
+    drawSeries($('cv-pn'), [{key:'p', index:1, color:'#e0a526'}], 'p3s', 'north');
+    drawSeries($('cv-pu'), [{key:'p', index:2, color:'#e0a526'}], 'p3s', 'up');
 
     // Fused height against the barometer's own, so the contribution is visible.
     drawSeries($('cv-baro'), [
-      {key:'p', index:2, color:'#d29922'},
+      {key:'p', index:2, color:'#e0a526'},
       {key:'bh', index:2, color:'#a78bfa'}], 'p3s', 'up (m)', 1.0);
 
-    drawSeries($('cv-ve'), [{key:'v', index:0, color:'#d29922'}], 'v3s', 'vE');
-    drawSeries($('cv-vn'), [{key:'v', index:1, color:'#d29922'}], 'v3s', 'vN');
-    drawSeries($('cv-vu'), [{key:'v', index:2, color:'#d29922'}], 'v3s', 'vU');
+    drawSeries($('cv-ve'), [{key:'v', index:0, color:'#e0a526'}], 'v3s', 'vE');
+    drawSeries($('cv-vn'), [{key:'v', index:1, color:'#e0a526'}], 'v3s', 'vN');
+    drawSeries($('cv-vu'), [{key:'v', index:2, color:'#e0a526'}], 'v3s', 'vU');
 
     // |accel| should sit near 9.81 at rest and |mag| near the local field
     // strength (roughly 25-65 µT depending on latitude). Both are shown

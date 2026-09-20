@@ -160,8 +160,12 @@ if (canonical) {
   expect('c-rate', '200 Hz');
 
   // Sliders seeded from the device's own params, not the page's defaults.
-  expect('v-sigma_accel', '0.350 m/s²/√Hz');
-  expect('v-tau_mag', '9.00 s');
+  // Derived from the frame rather than hardcoded: these are firmware defaults
+  // that change whenever the filter is re-tuned, and a literal here turns every
+  // retune into a spurious failure — which is exactly what it just did.
+  const sent = JSON.parse(frameJson).params;
+  expect('v-sigma_accel', `${sent.sigma_accel.toFixed(3)} m/s²/√Hz`);
+  expect('v-tau_mag', `${sent.tau_mag.toFixed(2)} s`);
   if (!elements.get('k-zupt')?.checked) failures.push('#k-zupt was not seeded from params');
 
   // Sensor magnitudes and calibration state.
