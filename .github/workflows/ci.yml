@@ -1,0 +1,113 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Same clang-format as the Taskfile expects; an unpinned one drifts.
+  CLANG_FORMAT_VERSION: 21.1.8
+
+jobs:
+  # ── Stage 1: every check is independent, so all of them run at once ────────
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-task@v2
+      - run: pip install clang-format==${{ env.CLANG_FORMAT_VERSION }}
+      - run: task format-check
+
+  lint:
+    name: Lint (cppcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-task@v2
+      - uses: ./.github/actions/setup-pio
+      - run: cp src/secrets.example.h src/secrets.h
+      - run: task lint
+
+  test:
+    name: Unit tests + coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-task@v2
+      - uses: ./.github/actions/setup-pio
+      - run: pip install gcovr
+      # Runs the same unit tests as `task test`, instrumented, then gates on 90% lines.
+      - run: task coverage
+      - name: Coverage summary
+        if: always()
+        run: |
+          [ -f .pio/coverage/summary.txt ] || exit 0
+          { echo '### Coverage'; echo '```'; cat .pio/coverage/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: .pio/coverage/
+          if-no-files-found: warn
+
+  test-ui:
+    name: Dashboard JS check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-task@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: ./.github/actions/setup-pio
+      - run: task test-ui
+
+  build:
+    name: Build ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [feathers3, i2cscan]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # scripts/version.py runs `git describe`
+      - uses: ./.github/actions/setup-pio
+      - run: cp src/secrets.example.h src/secrets.h
+      - run: pio run -e ${{ matrix.env }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.env }}
+          path: .pio/build/${{ matrix.env }}/firmware.bin
+
+  # ── Stage 2: only after every check above is green ─────────────────────────
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [format, lint, test, test-ui, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware-feathers3
+      - run: mv firmware.bin vqf-gps-${{ github.ref_name }}.bin
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: vqf-gps-${{ github.ref_name }}.bin
+          generate_release_notes: true

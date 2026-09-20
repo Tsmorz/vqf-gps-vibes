@@ -57,12 +57,10 @@ uint8_t IntensityAt(const Pattern& pattern, uint32_t now_ms) {
 }  // namespace
 
 void StatusLedBegin() {
-    // The FeatherS3 gates the LED's 3.3 V rail behind a GPIO; without this the
-    // LED stays dark no matter what is clocked into it.
-    pinMode(RGB_LED_POWER_PIN, OUTPUT);
-    digitalWrite(RGB_LED_POWER_PIN, HIGH);
-    delay(10);
-
+    // The LED's rail is LDO2, which also feeds the GPS and barometer and is
+    // brought up by BoardPowerBegin() before this runs. Deliberately not
+    // touched here: driving that pin low to darken the LED would cut power to
+    // two sensors. See board_power.h.
     pixel.begin();
     pixel.setBrightness(RGB_LED_BRIGHTNESS);
     pixel.clear();

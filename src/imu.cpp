@@ -9,6 +9,7 @@
 #include "config.h"
 #include "i2c_bus.h"
 #include "mag_cal.h"
+#include "sensor_limits.h"
 
 namespace {
 
@@ -90,6 +91,12 @@ void SaveMagCalibration(const MagCalibration& cal) {
 constexpr uint32_t kPresenceCheckIntervalMs = 250;
 uint32_t last_presence_check_ms = 0;
 
+// The bus generation these chips were initialised against. A bus recovery
+// invalidates their device handles, and the Adafruit driver cannot tell us --
+// it reports success while every transfer returns ESP_ERR_INVALID_STATE and
+// hands back corrupted bytes. Re-initialising is the only way back.
+uint32_t initialised_bus_generation = 0;
+
 // Applies the ranges and output data rates the filter expects.
 //
 // 833 Hz comfortably exceeds the 200 Hz estimator tick, so every read sees a
@@ -114,7 +121,7 @@ void ConfigureMagnetometer() {
 // Tries the primary then the alternate address, recording whichever answers.
 bool BeginAccelGyro() {
     for (uint8_t address : {LSM6DSOX_ADDR_PRIMARY, LSM6DSOX_ADDR_ALT}) {
-        if (!lsm.begin_I2C(address, &Wire)) {
+        if (!lsm.begin_I2C(address, &I2cWire(I2cBus::kImu))) {
             continue;
         }
         ConfigureAccelGyro();
@@ -129,7 +136,7 @@ bool BeginAccelGyro() {
 
 bool BeginMagnetometer() {
     for (uint8_t address : {LIS3MDL_ADDR_PRIMARY, LIS3MDL_ADDR_ALT}) {
-        if (!lis.begin_I2C(address, &Wire)) {
+        if (!lis.begin_I2C(address, &I2cWire(I2cBus::kImu))) {
             continue;
         }
         ConfigureMagnetometer();
@@ -159,6 +166,8 @@ void NoteFailure(SensorHealth& health, const char* name) {
 
 void NoteSuccess(SensorHealth& health) {
     health.consecutive_failures = 0;
+    // Evidence that the bus itself is alive, whatever other sensors are doing.
+    I2cNoteTransferOk(I2cBus::kImu);
 }
 
 // Takes a chip offline the moment it stops acknowledging. Unlike a failed
@@ -167,7 +176,7 @@ void CheckPresence(SensorHealth& health, const char* name) {
     if (!health.healthy || health.address == 0) {
         return;
     }
-    if (I2cDeviceResponds(health.address)) {
+    if (I2cDeviceResponds(I2cBus::kImu, health.address)) {
         return;
     }
     Serial.printf("[imu] %s stopped acknowledging at 0x%02X -- offline\n", name, health.address);
@@ -187,6 +196,21 @@ void CheckPresenceOfBothChips() {
     CheckPresence(magnetometer, "LIS3MDL");
 }
 
+// Forces both chips to re-initialise if anything recovered the bus since they
+// were set up, because their device handles no longer refer to a live bus.
+void ReinitAfterBusRecovery() {
+    const uint32_t generation = I2cBusGeneration(I2cBus::kImu);
+    if (generation == initialised_bus_generation) {
+        return;
+    }
+    initialised_bus_generation = generation;
+    Serial.println("[imu] bus was recovered -- re-initialising both chips");
+    accel_gyro.healthy = false;
+    magnetometer.healthy = false;
+    accel_gyro.last_retry_ms = 0;
+    magnetometer.last_retry_ms = 0;
+}
+
 // Re-initialises an offline chip, at most once per SENSOR_RETRY_INTERVAL_MS so
 // a permanently unplugged sensor cannot monopolise the bus. The bus itself is
 // recovered first, since a mid-transfer reset can leave SDA held low.
@@ -197,8 +221,11 @@ void RetryIfOffline(SensorHealth& health, const char* name, bool (*begin_fn)()) 
     }
     health.last_retry_ms = now;
 
-    if (!I2cDeviceResponds(health.address)) {
-        I2cRecover();
+    // A device that does not acknowledge is absent, not a wedged bus. Tearing
+    // the bus down here is what used to take the IMU out whenever the GPS was
+    // unplugged, so it only happens when SDA is genuinely stuck.
+    if (!I2cDeviceResponds(I2cBus::kImu, health.address) && I2cBusIsWedged(I2cBus::kImu)) {
+        I2cRecover(I2cBus::kImu);
     }
     if (begin_fn()) {
         health.reconnected = true;
@@ -219,6 +246,8 @@ void ImuBegin() {
 }
 
 bool ImuRead(ImuSample& out) {
+    I2cServiceWatchdog(I2cBus::kImu);
+    ReinitAfterBusRecovery();
     CheckPresenceOfBothChips();
     RetryIfOffline(accel_gyro, "LSM6DSOX", BeginAccelGyro);
     RetryIfOffline(magnetometer, "LIS3MDL", BeginMagnetometer);
@@ -234,8 +263,18 @@ bool ImuRead(ImuSample& out) {
             out.gyro[0] = gyro_event.gyro.x;
             out.gyro[1] = gyro_event.gyro.y;
             out.gyro[2] = gyro_event.gyro.z;
-            out.accel_gyro_valid = true;
-            NoteSuccess(accel_gyro);
+
+            // The driver returns true whatever happened on the bus, so the
+            // numbers themselves have to be the check.
+            if (sensor_limits::AccelGyroLooksValid(out.accel, out.gyro)) {
+                out.accel_gyro_valid = true;
+                NoteSuccess(accel_gyro);
+            } else {
+                out.accel[0] = out.accel[1] = out.accel[2] = 0.0f;
+                out.gyro[0] = out.gyro[1] = out.gyro[2] = 0.0f;
+                out.accel_gyro_valid = false;
+                NoteFailure(accel_gyro, "LSM6DSOX");
+            }
         } else {
             out.accel_gyro_valid = false;
             NoteFailure(accel_gyro, "LSM6DSOX");
@@ -251,8 +290,19 @@ bool ImuRead(ImuSample& out) {
             out.mag[1] = mag_event.magnetic.y;
             out.mag[2] = mag_event.magnetic.z;
 
+            if (!sensor_limits::MagLooksValid(out.mag)) {
+                // Clear the reading as well as flagging it. Otherwise the
+                // rejected values still travel to the dashboard, where they
+                // look exactly like a broken sensor.
+                out.mag[0] = out.mag[1] = out.mag[2] = 0.0f;
+                out.mag_valid = false;
+                NoteFailure(magnetometer, "LIS3MDL");
+                return out.accel_gyro_valid;
+            }
+
             // A sweep collects raw readings; the correction is applied after,
-            // so a sweep in progress never feeds on its own output.
+            // so a sweep in progress never feeds on its own output. Only valid
+            // samples get here, so corruption cannot poison a calibration.
             portENTER_CRITICAL(&mag_lock);
             if (mag_collecting) {
                 mag_collector.Add(out.mag);

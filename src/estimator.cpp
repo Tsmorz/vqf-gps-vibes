@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "attitude.h"
+#include "baro.h"
 #include "config.h"
 #include "geo.h"
 #include "gps.h"
@@ -19,11 +20,46 @@ VQF vqf(ESTIMATOR_INTERVAL_MS / 1000.0f);
 
 NavFilter nav;
 geo::Origin origin;
+BaroSample latest_baro;
 
 FilterParams params;
 EstimatorSnapshot snapshot;
 uint32_t filter_resets = 0;
 uint32_t gps_update_count = 0;
+
+// How long ticks take, as opposed to how often they run. A tick that outlasts
+// its period is the direct evidence that core 1 is saturated (usually by I2C
+// waits, not arithmetic). Only touched by the estimator task; the published
+// values are the last completed one-second window.
+struct TickStats {
+    float avg_us = 0.0f;
+    float max_us = 0.0f;
+    uint32_t overruns = 0;
+} tick_stats;
+
+void RecordTickDuration(uint32_t busy_us) {
+    static uint32_t window_start_ms = 0;
+    static uint32_t sum_us = 0;
+    static uint32_t count = 0;
+    static uint32_t max_us = 0;
+
+    sum_us += busy_us;
+    count++;
+    max_us = busy_us > max_us ? busy_us : max_us;
+    if (busy_us > ESTIMATOR_INTERVAL_MS * 1000u) {
+        tick_stats.overruns++;
+    }
+
+    const uint32_t now = millis();
+    if (now - window_start_ms >= 1000) {
+        tick_stats.avg_us = static_cast<float>(sum_us) / count;
+        tick_stats.max_us = static_cast<float>(max_us);
+        window_start_ms = now;
+        sum_us = 0;
+        count = 0;
+        max_us = 0;
+    }
+}
 
 // Guards `params` (written from the web handler on core 0) and `snapshot`
 // (written by the estimator task on core 1). Both are short, non-blocking
@@ -101,6 +137,48 @@ void ApplyGpsFix(const GpsSample& fix, const FilterParams& active) {
     gps_update_count++;
 }
 
+// Reads the barometer and folds it into the filter.
+//
+// The first good sample anchors the offset state instead of being blended in:
+// the barometer's datum starts out unknown to within the station's elevation,
+// and that innovation would drag the height estimate hundreds of metres.
+// After that the barometer supplies fine-grained height changes while GPS
+// anchors the absolute value and slowly pins the offset down.
+//
+// Crucially, anchoring waits until the height estimate is worth anchoring to.
+// At boot the filter free-runs: VQF has not converged, so gravity does not
+// cancel and the height integrates away -- measured at -18 m within seconds of
+// power-up. Anchoring against that bakes the error into the offset, and
+// because the barometer is trusted an order of magnitude more than GPS
+// altitude, it then takes minutes to undo. So the anchor waits for the first
+// GPS fix, which snaps height to a known value; failing that, for a timeout,
+// by which point VQF has converged and zero-velocity updates hold height
+// steady. Indoors with no GPS the timeout is the path that runs, and the
+// barometer is then the only height reference there is.
+void ServiceBaro(const FilterParams& active) {
+    BaroSample sample;
+    if (!BaroRead(sample)) {
+        return;
+    }
+    latest_baro = sample;
+
+    if (!active.baro_enabled) {
+        return;
+    }
+    if (!nav.baro_anchored()) {
+        const bool height_is_meaningful = origin.valid || millis() > BARO_ANCHOR_FALLBACK_MS;
+        if (!height_is_meaningful) {
+            return;
+        }
+        nav.SetBaroBias(sample.pressure_altitude_m, BARO_ANCHOR_SIGMA);
+        Serial.printf("[est] barometer anchored at %.1f m pressure altitude (%s)\n",
+                      sample.pressure_altitude_m,
+                      origin.valid ? "on the first GPS fix" : "no GPS -- using the timeout");
+        return;
+    }
+    nav.UpdateBaroAltitude(sample.pressure_altitude_m, active.sigma_baro);
+}
+
 // Polls the GPS and folds any new fix into the filter. Runs at a fraction of
 // the estimator rate -- the receiver only produces a fix once a second.
 void ServiceGps(const FilterParams& active) {
@@ -172,6 +250,15 @@ void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz
     next.origin_lon = origin.lon_deg;
     next.origin_alt_m = origin.alt_m;
 
+    next.baro_healthy = BaroHealthy();
+    next.baro_pressure_pa = latest_baro.pressure_pa;
+    next.baro_temperature_c = latest_baro.temperature_c;
+    next.baro_altitude_m = latest_baro.pressure_altitude_m;
+    next.baro_bias_m = nav.state(NavFilter::kBaroBias);
+    next.baro_bias_sigma3 = nav.ThreeSigma(NavFilter::kBaroBias);
+    next.baro_height_m = latest_baro.pressure_altitude_m - next.baro_bias_m;
+    next.baro_failures = BaroFailureCount();
+
     next.imu_healthy = ImuAccelGyroHealthy();
     next.mag_healthy = ImuMagHealthy();
     next.gps_healthy = GpsHealthy();
@@ -179,6 +266,9 @@ void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz
     next.gps_failures = GpsFailureCount();
     next.filter_resets = filter_resets;
     next.estimator_hz = loop_hz;
+    next.tick_busy_avg_us = tick_stats.avg_us;
+    next.tick_busy_max_us = tick_stats.max_us;
+    next.tick_overruns = tick_stats.overruns;
 
     portENTER_CRITICAL(&state_lock);
     snapshot = next;
@@ -238,6 +328,7 @@ void Tick(float dt) {
         NavFilter::Params process_noise;
         process_noise.sigma_accel = active.sigma_accel;
         process_noise.sigma_accel_bias = active.sigma_accel_bias;
+        process_noise.sigma_baro_bias = active.sigma_baro_bias;
         nav.Predict(sample.accel, rotation, dt, process_noise);
 
         if (active.zupt_enabled && vqf.getRestDetected()) {
@@ -250,10 +341,14 @@ void Tick(float dt) {
         NavFilter::Params process_noise;
         process_noise.sigma_accel = active.sigma_accel;
         process_noise.sigma_accel_bias = active.sigma_accel_bias;
+        process_noise.sigma_baro_bias = active.sigma_baro_bias;
         nav.PredictCoasting(dt, process_noise);
     }
 
+    // GPS first: its first fix defines the local frame and snaps height, and
+    // the barometer anchors against that same tick's value.
     ServiceGps(active);
+    ServiceBaro(active);
 
     // Numerical trouble here would publish NaNs to every plot on the
     // dashboard; starting over is both safer and easier to interpret.
@@ -267,6 +362,14 @@ void Tick(float dt) {
 }
 
 void EstimatorTask(void* /*argument*/) {
+    // Bring the bus up from here rather than from setup(). The I2C driver
+    // allocates its interrupt on whichever core installs it, and setup() runs
+    // on core 0 -- so every transfer completion would interrupt the WiFi core
+    // and then wake this task across cores, adding jitter to the 200 Hz tick.
+    I2cBeginAll();
+    ImuBegin();
+    GpsBegin();
+
     const TickType_t period = pdMS_TO_TICKS(ESTIMATOR_INTERVAL_MS);
     TickType_t last_wake = xTaskGetTickCount();
     uint32_t last_tick_us = micros();
@@ -277,6 +380,7 @@ void EstimatorTask(void* /*argument*/) {
         last_tick_us = now_us;
 
         Tick(dt);
+        RecordTickDuration(micros() - now_us);
         vTaskDelayUntil(&last_wake, period);
     }
 }
@@ -284,10 +388,6 @@ void EstimatorTask(void* /*argument*/) {
 }  // namespace
 
 bool EstimatorBegin() {
-    I2cBegin();
-    ImuBegin();
-    GpsBegin();
-
     const FilterParams initial = ReadParams();
     ApplyVqfTuning(initial);
 
@@ -327,6 +427,7 @@ void EstimatorResetFilter() {
     portENTER_CRITICAL(&state_lock);
     nav.Reset();
     origin = geo::Origin();
+    latest_baro = BaroSample();
     gps_update_count = 0;
     filter_resets++;
     portEXIT_CRITICAL(&state_lock);

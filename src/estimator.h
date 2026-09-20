@@ -46,6 +46,16 @@ struct EstimatorSnapshot {
     float pos_sigma3[3] = {0, 0, 0};  // 3-sigma envelope, m
     float vel_sigma3[3] = {0, 0, 0};  // 3-sigma envelope, m/s
 
+    // ── Barometer ────────────────────────────────────────────────────────
+    bool baro_healthy = false;
+    float baro_pressure_pa = 0.0f;
+    float baro_temperature_c = 0.0f;
+    float baro_altitude_m = 0.0f;  // pressure altitude, arbitrary datum
+    float baro_bias_m = 0.0f;      // filter's estimate of that datum
+    float baro_bias_sigma3 = 0.0f;
+    float baro_height_m = 0.0f;  // baro altitude corrected by the bias
+    uint32_t baro_failures = 0;
+
     // ── GPS ──────────────────────────────────────────────────────────────
     bool gps_fix = false;
     uint8_t gps_satellites = 0;
@@ -72,10 +82,16 @@ struct EstimatorSnapshot {
     uint32_t gps_failures = 0;
     uint32_t filter_resets = 0;
     float estimator_hz = 0.0f;
+
+    // ── Core 1 headroom, over the last second ────────────────────────────
+    float tick_busy_avg_us = 0.0f;  // time spent in one tick; the period is 5000 us
+    float tick_busy_max_us = 0.0f;
+    uint32_t tick_overruns = 0;  // ticks that ran past their period, since boot
 };
 
-// Initialises the bus and sensors, then starts the estimator task. Returns
-// false if the task could not be created.
+// Starts the estimator task, which brings up the bus and sensors itself (on
+// core 1, so the I2C interrupt lands there too). Returns false if the task
+// could not be created.
 bool EstimatorBegin();
 
 // Copies the latest snapshot. Safe to call from any core.

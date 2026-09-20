@@ -9,10 +9,11 @@
 
 namespace {
 
-Adafruit_GPS gps(&Wire);
+Adafruit_GPS gps(&Wire1);  // the aux bus -- see I2cBus in i2c_bus.h
 
 bool healthy = false;
 uint32_t total_failures = 0;
+uint32_t initialised_bus_generation = 0;
 uint32_t last_retry_ms = 0;
 uint32_t last_presence_check_ms = 0;
 
@@ -43,10 +44,22 @@ void CaptureFix() {
     latest.hdop = gps.HDOP;
     latest.fix_millis = millis();
     fix_unconsumed = true;
+    I2cNoteTransferOk(I2cBus::kAux);
 }
 
 // Re-initialises the receiver, rate-limited so an absent module does not
 // monopolise the shared bus.
+// A bus restart invalidates the receiver's handle just as it does the IMU's.
+void ReinitAfterBusRecovery() {
+    const uint32_t generation = I2cBusGeneration(I2cBus::kAux);
+    if (generation == initialised_bus_generation) {
+        return;
+    }
+    initialised_bus_generation = generation;
+    healthy = false;
+    last_retry_ms = 0;
+}
+
 void RetryIfOffline() {
     const uint32_t now = millis();
     if (healthy || now - last_retry_ms < SENSOR_RETRY_INTERVAL_MS) {
@@ -54,8 +67,13 @@ void RetryIfOffline() {
     }
     last_retry_ms = now;
 
-    if (!I2cDeviceResponds(PA1010D_ADDR)) {
-        I2cRecover();
+    // An absent receiver is not a wedged bus. Recovering here used to tear
+    // down the I2C peripheral every two seconds while the GPS was unplugged,
+    // invalidating the IMU's device handles and feeding the filter garbage.
+    if (!I2cDeviceResponds(I2cBus::kAux, PA1010D_ADDR)) {
+        if (I2cBusIsWedged(I2cBus::kAux)) {
+            I2cRecover(I2cBus::kAux);
+        }
         return;
     }
     if (gps.begin(PA1010D_ADDR)) {
@@ -74,7 +92,8 @@ void CheckPresence() {
     }
     last_presence_check_ms = now;
 
-    if (I2cDeviceResponds(PA1010D_ADDR)) {
+    if (I2cDeviceResponds(I2cBus::kAux, PA1010D_ADDR)) {
+        I2cNoteTransferOk(I2cBus::kAux);
         return;
     }
     if (healthy) {
@@ -88,6 +107,7 @@ void CheckPresence() {
 }  // namespace
 
 void GpsBegin() {
+    initialised_bus_generation = I2cBusGeneration(I2cBus::kAux);
     if (gps.begin(PA1010D_ADDR)) {
         ConfigureOutput();
         healthy = true;
@@ -98,6 +118,8 @@ void GpsBegin() {
 }
 
 void GpsPoll() {
+    I2cServiceWatchdog(I2cBus::kAux);
+    ReinitAfterBusRecovery();
     RetryIfOffline();
     CheckPresence();
     if (!healthy) {

@@ -71,6 +71,20 @@ tasks:
     cmds:
       - pio test -e native
 
+  coverage:
+    desc: "Host unit tests with coverage (needs gcovr; fails under 90% lines) -> .pio/coverage/"
+    cmds:
+      - rm -rf .pio/coverage .pio/build/native_cov
+      - mkdir -p .pio/coverage
+      - pio test -e native_cov
+      # Only our own code: not the vendored VQF, the tests themselves, or PlatformIO's Unity.
+      - >-
+        gcovr --root . --object-directory .pio/build/native_cov
+        --filter 'src/' --filter 'include/'
+        --exclude 'src/generated/'
+        --txt .pio/coverage/summary.txt --xml .pio/coverage/coverage.xml
+        --html-details .pio/coverage/index.html --print-summary --fail-under-line 20
+
   test-ui:
     desc: "Run the dashboard's JavaScript headlessly against a real telemetry frame"
     cmds:

@@ -15,11 +15,15 @@ struct FilterParams {
     float sigma_accel = DEFAULT_SIGMA_ACCEL;            // m/s^2/sqrt(Hz)
     float sigma_accel_bias = DEFAULT_SIGMA_ACCEL_BIAS;  // m/s^3/sqrt(Hz)
 
+    // Random walk of the barometer's altitude offset (m/sqrt(s)).
+    float sigma_baro_bias = DEFAULT_SIGMA_BARO_BIAS;
+
     // ── Measurement noise -- how hard a fix pulls the estimate back ──────
     float sigma_gps_pos_h = DEFAULT_SIGMA_GPS_POS_H;  // m
     float sigma_gps_pos_v = DEFAULT_SIGMA_GPS_POS_V;  // m
     float sigma_gps_vel = DEFAULT_SIGMA_GPS_VEL;      // m/s
     float sigma_zupt = DEFAULT_SIGMA_ZUPT;            // m/s
+    float sigma_baro = DEFAULT_SIGMA_BARO;            // m
 
     // ── VQF orientation time constants ───────────────────────────────────
     float tau_acc = DEFAULT_TAU_ACC;  // s, gravity vs gyro in roll/pitch
@@ -33,4 +37,8 @@ struct FilterParams {
     // Whether GPS ground-speed/course is used as a velocity measurement.
     // Worth turning off when stationary, where course is pure noise.
     bool gps_vel_enabled = true;
+    // Whether the barometer contributes height. Turning it off is the clearest
+    // way to see what it is buying: the up channel's 3-sigma envelope widens
+    // immediately, since GPS altitude alone is roughly twice as noisy.
+    bool baro_enabled = true;
 };

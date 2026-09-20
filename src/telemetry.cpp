@@ -49,6 +49,13 @@ size_t BuildTelemetryFrame(char* buffer, size_t buffer_size, const EstimatorSnap
                         s.mag_calibrated ? 1 : 0, s.mag_collecting ? 1 : 0, s.mag_cal_progress,
                         s.mag_field_ut)) &&
 
+        append(snprintf(buffer + used, buffer_size - used,
+                        "},\"baro\":{\"ok\":%d,\"pa\":%.0f,\"tc\":%.1f,\"alt\":%.2f,"
+                        "\"bias\":%.2f,\"bias3s\":%.2f,\"h\":%.2f,\"f\":%u",
+                        s.baro_healthy ? 1 : 0, s.baro_pressure_pa, s.baro_temperature_c,
+                        s.baro_altitude_m, s.baro_bias_m, s.baro_bias_sigma3, s.baro_height_m,
+                        s.baro_failures)) &&
+
         append(snprintf(buffer + used, buffer_size - used, "},\"nav\":{")) &&
         append(WriteVector(buffer + used, buffer_size - used, "p", s.pos, 3)) &&
         append(snprintf(buffer + used, buffer_size - used, ",")) &&
@@ -81,11 +88,13 @@ size_t BuildTelemetryFrame(char* buffer, size_t buffer_size, const EstimatorSnap
         append(snprintf(buffer + used, buffer_size - used,
                         "\"params\":{\"sigma_accel\":%.4f,\"sigma_accel_bias\":%.5f,"
                         "\"sigma_gps_pos_h\":%.2f,\"sigma_gps_pos_v\":%.2f,"
-                        "\"sigma_gps_vel\":%.3f,\"sigma_zupt\":%.4f,\"tau_acc\":%.2f,"
-                        "\"tau_mag\":%.2f,\"zupt_enabled\":%d,\"gps_vel_enabled\":%d}}",
+                        "\"sigma_gps_vel\":%.3f,\"sigma_zupt\":%.4f,\"sigma_baro\":%.3f,"
+                        "\"sigma_baro_bias\":%.5f,\"tau_acc\":%.2f,\"tau_mag\":%.2f,"
+                        "\"zupt_enabled\":%d,\"gps_vel_enabled\":%d,\"baro_enabled\":%d}}",
                         p.sigma_accel, p.sigma_accel_bias, p.sigma_gps_pos_h, p.sigma_gps_pos_v,
-                        p.sigma_gps_vel, p.sigma_zupt, p.tau_acc, p.tau_mag, p.zupt_enabled ? 1 : 0,
-                        p.gps_vel_enabled ? 1 : 0));
+                        p.sigma_gps_vel, p.sigma_zupt, p.sigma_baro, p.sigma_baro_bias, p.tau_acc,
+                        p.tau_mag, p.zupt_enabled ? 1 : 0, p.gps_vel_enabled ? 1 : 0,
+                        p.baro_enabled ? 1 : 0));
 
     return complete ? used : 0;
 }

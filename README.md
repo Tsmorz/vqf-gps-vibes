@@ -11,19 +11,46 @@ VQF's attitude solution.
 
 ## Hardware
 
-| Part | Interface | Address |
-|---|---|---|
-| Unexpected Maker FeatherS3 (ESP32-S3, 16 MB flash) | — | — |
-| Adafruit LSM6DSOX + LIS3MDL breakout | I2C bus 0 | `0x6A`, `0x1C` |
-| Adafruit Mini GPS PA1010D | I2C bus 0 | `0x10` |
+| Part | Bus | Address | Rail |
+|---|---|---|---|
+| Unexpected Maker FeatherS3 (ESP32-S3, 16 MB flash) | — | — | — |
+| Adafruit LSM6DSOX + LIS3MDL breakout | bus 0 "imu", `SDA 8 / SCL 9` | `0x6A`, `0x1C` | LDO1 |
+| Adafruit Mini GPS PA1010D | bus 1 "aux", `SDA1 16 / SCL1 15` | `0x10` | LDO2 |
+| Adafruit BMP390 pressure/temperature | bus 1 "aux", `SDA1 16 / SCL1 15` | `0x77` | LDO2 |
 
-The FeatherS3 exposes **two** I2C buses — `SDA 8 / SCL 9` and `SDA1 16 / SCL1 15`.
-All three sensors are daisy-chained on **bus 0** (`SDA 8 / SCL 9`); bus 1 is unused.
-Run `task scan` to confirm this on your own wiring before anything else — it scans
-both buses and prints what answers on each.
+Run `task scan` before anything else — it scans **both** buses and prints what
+answers on each.
 
-Because the sensors share one bus, every I2C transfer is issued from a single
-FreeRTOS task, so the GPS and the IMU can never interleave transactions.
+### Why the sensors are split across two buses
+
+They all started on one STEMMA run, and that made the GPS's intermittent
+connector a system-wide fault: one 20-second capture had 113 frames in which the
+accelerometer, gyroscope **and** magnetometer were simultaneously dead, because a
+glitch on shared lines corrupts every transfer on them. The GPS is also the
+heaviest consumer of bus time — a 32-byte refill costs ~2.9 ms at 100 kHz against
+a 5 ms estimator tick.
+
+So the latency-critical IMU gets a short bus to itself, and the slow, physically
+less reliable devices share the other. Every transfer on a bus is still issued
+from a single task, so two cores can never interleave transactions on it.
+
+### Power rails
+
+LDO1 is always on and feeds the ESP32-S3 and the IMU. **LDO2 is switchable, gated
+by GPIO 39**, and feeds the 3V3 pin — here the GPS and barometer.
+
+GPIO 39 is also `RGB_PWR`: the variant header defines `LDO2` and `RGB_PWR` as the
+same pin, so the onboard LED shares that rail. Two consequences:
+
+- **Never drive GPIO 39 low to turn the LED off** — it would cut power to two
+  sensors. Send a black pixel instead.
+- The rail must be up *and settled* before those sensors are initialised, which is
+  why `BoardPowerBegin()` is a deliberate first step in `setup()` rather than a
+  side effect of the LED coming up.
+
+The switchable rail also buys a recovery option the IMU does not have: an aux
+sensor wedged badly enough to ignore its own bus can simply be power-cycled, and
+that is the top of the escalation ladder in `I2cServiceWatchdog()`.
 
 ## Quick start
 
@@ -60,11 +87,58 @@ which mode won and the address to open.
 | `task monitor` | Serial monitor only |
 | `task scan` | Flash the I2C/LED bring-up probe — use when a cable is suspect |
 | `task test` | Host unit tests (EKF, geodesy, telemetry encoder) |
+| `task coverage` | Host unit tests instrumented with gcov; HTML report in `.pio/coverage/` (needs `pip install gcovr`) |
 | `task test-ui` | Run the dashboard's JavaScript headlessly against a real frame |
 | `task lint` | cppcheck static analysis |
 | `task format` / `format-check` | clang-format (Google style, 4-space indent) |
 | `task ci` | Everything above, in CI order |
 | `task erase` | Erase all flash |
+
+## CI/CD
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
+`main` and every pull request. Each check is its own job, so they run **in
+parallel** on separate runners and a failure in one does not hide the others.
+Publishing waits for all of them.
+
+```mermaid
+flowchart LR
+    push([push / PR]) --> S1
+    subgraph S1["Stage 1 · checks, all in parallel"]
+        direction TB
+        format["Format<br/>clang-format"]
+        lint["Lint<br/>cppcheck"]
+        test["Unit tests + coverage<br/>gcovr, ≥ 90% lines"]
+        ui["Dashboard JS check<br/>task test-ui"]
+        subgraph B["Build matrix"]
+            direction TB
+            fw["feathers3<br/>firmware"]
+            scan["i2cscan<br/>probe"]
+        end
+    end
+    S1 -->|all green, tag v*| S2
+    subgraph S2["Stage 2 · CD"]
+        release["GitHub release<br/>firmware .bin attached"]
+    end
+```
+
+| Job | Runs | Fails when |
+|---|---|---|
+| Format | `task format-check` | any source differs from clang-format 21.1.8 output |
+| Lint | `task lint` | cppcheck reports a HIGH or MEDIUM finding |
+| Unit tests + coverage | `task coverage` | a test fails, or line coverage drops below 90% |
+| Dashboard JS check | `task test-ui` | the dashboard and the telemetry encoder disagree on a field |
+| Build (`feathers3`, `i2cscan`) | `pio run -e <env>` | either firmware fails to compile |
+| Publish release | attaches `vqf-gps-<tag>.bin` | only runs for a `v*` tag, after every job above passes |
+
+**Coverage** is measured with gcov on the host unit tests and reported by
+`gcovr`. The per-file table appears on the run's summary page, and the full HTML
+report is uploaded as the `coverage` artifact. Run `task coverage` to get the same
+report locally. The figure covers the host-testable code only (the EKF, geodesy,
+magnetometer calibration, sensor limits and telemetry encoder). Code that touches
+Arduino or the I2C bus cannot run on a host, so it is not in the denominator.
+
+To cut a release, tag and push: `git tag v1.0.0 && git push origin v1.0.0`.
 
 ## Dashboard
 
@@ -124,6 +198,43 @@ Accelerometer scale is a separate, smaller matter: this board reads |accel| ≈
 10.12 m/s² at rest against a true 9.807, about 3 % high. That is within the
 LSM6DSOX's sensitivity tolerance, and the filter's accelerometer-bias states
 absorb it once GPS or zero-velocity updates make them observable.
+
+## Barometer
+
+The BMP390 improves height, which is the weakest axis of a GPS-only estimate.
+Worth being explicit about what the part does: **it has no built-in altitude
+estimation.** It reports pressure and temperature. Adafruit's `readAltitude()` is
+a host-side barometric formula that takes the current sea-level pressure as an
+argument — a value you do not have, and guessing the 1013.25 hPa standard is
+wrong by however much the weather differs, routinely tens of metres.
+
+So the driver does not pretend to produce absolute altitude. It reports a
+*pressure altitude* against the fixed standard reference — arbitrary in absolute
+terms, excellent in its changes — and the filter carries the offset as a tenth
+state (`kBaroBias`). The barometer then observes *height + offset*, GPS observes
+height directly, and the offset absorbs the unknown reference and weather drift.
+That is the same trick as the accelerometer bias states: model the error you
+cannot measure rather than pretend it is absent.
+
+**Anchoring waits for a meaningful height.** At boot the filter free-runs: VQF
+has not converged, gravity does not cancel, and height integrates away — measured
+at −18 m within seconds of power-up. Anchoring against that bakes the error into
+the offset, and because the barometer is trusted far more than GPS altitude it
+then takes minutes to undo. So the anchor waits for the first GPS fix, which
+snaps height to a known value, or for `BARO_ANCHOR_FALLBACK_MS` if no fix ever
+arrives — which is the indoor case, where the barometer is the only height
+reference there is.
+
+Measured contribution, symmetric A/B on a stationary rig (30 s settle, 15 s
+measure, both orders):
+
+| | height 3σ | height sd |
+|---|---|---|
+| barometer on | 0.72–0.78 m | 7–23 cm |
+| barometer off | 1.08 m, and **6.10 m** once GPS altitude degraded | 15 cm / 200 cm |
+
+The envelope is tighter with it, and far more importantly it stays bounded when
+GPS altitude wanders. Toggle `use barometer` on the dashboard to see this.
 
 ## Status LED
 

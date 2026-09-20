@@ -11,6 +11,7 @@
 
 #include <Arduino.h>
 
+#include "board_power.h"
 #include "config.h"
 #include "estimator.h"
 #include "status_led.h"
@@ -34,7 +35,7 @@ SystemStatus EvaluateStatus(const EstimatorSnapshot& snapshot) {
         return SystemStatus::kError;
     }
     const bool degraded = !snapshot.mag_healthy || !snapshot.gps_healthy || !snapshot.gps_fix ||
-                          snapshot.estimator_hz < kMinHealthyEstimatorHz;
+                          !snapshot.baro_healthy || snapshot.estimator_hz < kMinHealthyEstimatorHz;
     return degraded ? SystemStatus::kWarning : SystemStatus::kNormal;
 }
 
@@ -89,12 +90,14 @@ void LogPeriodically(const EstimatorSnapshot& s) {
         "[st] %.0fHz loop=%.0fHz rpy=%6.1f %6.1f %6.1f  "
         "pos=%7.2f %7.2f %7.2f  3s=%5.1f %5.1f %5.1f  "
         "vel=%6.2f %6.2f %6.2f  rest=%d  raw=%7.2f %7.2f %7.2f  gps=%s(%u)  "
-        "imu=%s mag=%s  clients=%u\n",
+        "baro=%s %.2fm  imu=%s mag=%s  clients=%u  tick=%.0f/%.0fus over=%u\n",
         s.estimator_hz, loop_hz, s.roll_deg, s.pitch_deg, s.yaw_deg, s.pos[0], s.pos[1], s.pos[2],
         s.pos_sigma3[0], s.pos_sigma3[1], s.pos_sigma3[2], s.vel[0], s.vel[1], s.vel[2],
         s.rest_detected ? 1 : 0, s.gps_enu[0], s.gps_enu[1], s.gps_enu[2],
         s.gps_fix ? "fix" : (s.gps_healthy ? "searching" : "absent"), s.gps_satellites,
-        s.imu_healthy ? "ok" : "LOST", s.mag_healthy ? "ok" : "LOST", WebServerClientCount());
+        s.baro_healthy ? "ok" : "LOST", s.baro_height_m, s.imu_healthy ? "ok" : "LOST",
+        s.mag_healthy ? "ok" : "LOST", WebServerClientCount(), s.tick_busy_avg_us,
+        s.tick_busy_max_us, s.tick_overruns);
 }
 
 }  // namespace
@@ -119,6 +122,11 @@ void setup() {
     delay(1500);
     Serial.printf("\n=== vqf-gps-vibes %s ===\n", FW_VERSION);
 
+    // LDO2 feeds the GPS and barometer as well as the status LED, and the
+    // PA1010D needs time to boot once the rail is up -- so this comes first
+    // and deliberately, rather than as a side effect of the LED coming up.
+    BoardPowerBegin();
+
     StatusLedBegin();
     StatusLedSet(SystemStatus::kInitialising);
 
@@ -142,4 +150,12 @@ void loop() {
 
     WebServerBroadcast(snapshot, EstimatorGetParams(), StatusName(status));
     LogPeriodically(snapshot);
+
+    // Give up the rest of this millisecond. Without it loop() spins at 100% of
+    // core 0, starving the idle task (which the task watchdog monitors on this
+    // core) and re-copying an unchanged snapshot thousands of times a second
+    // under the lock the estimator publishes through. A 1 ms yield is far
+    // below anything the web server or the status LED can notice, and unlike
+    // Serial output it cannot stall -- the loop still comes back within 1 ms.
+    delay(1);
 }

@@ -164,6 +164,130 @@ void test_free_fall_from_a_dead_sensor_is_caught() {
                              "a sensor reading zeros must eventually be caught");
 }
 
+// ── Barometer ───────────────────────────────────────────────────────────────
+
+// Anchoring must not move the height estimate. The barometer's datum is
+// unknown by hundreds of metres at first, and blending that in would drag the
+// estimate with it -- which is the whole reason SetBaroBias exists.
+void test_anchoring_the_barometer_does_not_move_height() {
+    NavFilter filter;
+    const float fix[3] = {0.0f, 0.0f, 12.0f};
+    filter.SetPosition(fix, 1.0f);
+    TEST_ASSERT_FALSE(filter.baro_anchored());
+
+    // A pressure altitude 500 m off, as a station well above sea level reads.
+    filter.SetBaroBias(512.0f, 2.0f);
+
+    TEST_ASSERT_TRUE(filter.baro_anchored());
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 12.0f, filter.state(NavFilter::kPosUp));
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 500.0f, filter.state(NavFilter::kBaroBias));
+}
+
+// With its offset well known, a barometer that climbs ten metres must move
+// the height estimate ten metres. This is the fine detail the sensor is for.
+void test_barometer_tracks_a_climb() {
+    NavFilter filter;
+    const float ground[3] = {0.0f, 0.0f, 0.0f};
+    filter.SetPosition(ground, 1.0f);
+    filter.SetBaroBias(512.0f, 0.1f);  // offset confidently known
+
+    for (int i = 0; i < 40; i++) {
+        PredictFor(filter, kAccelAtRest, 0.05f);
+        filter.UpdateBaroAltitude(522.0f, 0.3f);
+    }
+
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 10.0f, filter.state(NavFilter::kPosUp));
+}
+
+// The barometer alone cannot separate a climb from a drifting offset -- it
+// only ever observes their sum. The filter therefore splits an innovation
+// between the two in proportion to how uncertain each currently is, and this
+// pins that down, because it is the behaviour that makes the offset state
+// safe: a badly-known offset soaks up the change instead of corrupting height.
+void test_barometer_innovation_splits_by_prior_uncertainty() {
+    NavFilter filter;
+    const float ground[3] = {0.0f, 0.0f, 0.0f};
+    filter.SetPosition(ground, 1.0f);  // height variance 1.0
+    filter.SetBaroBias(500.0f, 1.0f);  // offset variance 1.0, equally unsure
+
+    const float height_before = filter.state(NavFilter::kPosUp);
+    const float offset_before = filter.state(NavFilter::kBaroBias);
+    filter.UpdateBaroAltitude(510.0f, 0.001f);  // a 10 m step, trusted fully
+
+    const float height_moved = filter.state(NavFilter::kPosUp) - height_before;
+    const float offset_moved = filter.state(NavFilter::kBaroBias) - offset_before;
+
+    // Equal priors, so the step is shared equally, and the two must still add
+    // up to the full innovation.
+    TEST_ASSERT_FLOAT_WITHIN(0.2f, 5.0f, height_moved);
+    TEST_ASSERT_FLOAT_WITHIN(0.2f, 5.0f, offset_moved);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 10.0f, height_moved + offset_moved);
+}
+
+// A barometer whose absolute datum is badly wrong must still be usable: GPS
+// pins the height, the offset state absorbs the error, and the two agree.
+// This is the property that makes the sensor worth having at all.
+void test_wrong_barometer_datum_is_absorbed_by_the_offset() {
+    NavFilter filter;
+    const float fix[3] = {0.0f, 0.0f, 0.0f};
+    filter.SetPosition(fix, 3.0f);
+    // Anchored 30 m wrong on purpose, and told the anchor is trustworthy, so
+    // only the GPS updates below can correct it.
+    filter.SetBaroBias(530.0f, 2.0f);
+
+    for (int i = 0; i < 300; i++) {
+        PredictFor(filter, kAccelAtRest, 0.05f);
+        filter.UpdateBaroAltitude(500.0f, 0.3f);    // true offset is 500
+        filter.UpdateGpsPosition(fix, 3.0f, 6.0f);  // truth: height 0
+        filter.UpdateZeroVelocity(0.02f);
+    }
+
+    TEST_ASSERT_FLOAT_WITHIN(1.5f, 0.0f, filter.state(NavFilter::kPosUp));
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 500.0f, filter.state(NavFilter::kBaroBias));
+}
+
+// The point of adding the sensor: height should end up better known with the
+// barometer than with GPS altitude alone.
+void test_barometer_tightens_the_height_envelope() {
+    const float fix[3] = {0.0f, 0.0f, 0.0f};
+
+    NavFilter gps_only;
+    gps_only.SetPosition(fix, 3.0f);
+    NavFilter with_baro;
+    with_baro.SetPosition(fix, 3.0f);
+    with_baro.SetBaroBias(500.0f, 2.0f);
+
+    for (int i = 0; i < 200; i++) {
+        PredictFor(gps_only, kAccelAtRest, 0.05f);
+        PredictFor(with_baro, kAccelAtRest, 0.05f);
+        gps_only.UpdateGpsPosition(fix, 3.0f, 6.0f);
+        with_baro.UpdateGpsPosition(fix, 3.0f, 6.0f);
+        with_baro.UpdateBaroAltitude(500.0f, 0.3f);
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        with_baro.ThreeSigma(NavFilter::kPosUp) < gps_only.ThreeSigma(NavFilter::kPosUp),
+        "adding the barometer must reduce the height uncertainty");
+}
+
+// A general-Jacobian update of a single state must match the single-state
+// helper exactly -- the helper is now expressed in terms of the general form,
+// and this pins that equivalence down.
+void test_general_update_matches_single_state_update() {
+    NavFilter a;
+    NavFilter b;
+    a.UpdateScalar(NavFilter::kPosEast, 7.0f, 4.0f);
+
+    float h[NavFilter::kNumStates] = {};
+    h[NavFilter::kPosEast] = 1.0f;
+    b.UpdateScalarWithJacobian(h, 7.0f, 4.0f);
+
+    for (int i = 0; i < NavFilter::kNumStates; i++) {
+        TEST_ASSERT_FLOAT_WITHIN(1e-5f, a.state(i), b.state(i));
+        TEST_ASSERT_FLOAT_WITHIN(1e-5f, a.variance(i), b.variance(i));
+    }
+}
+
 // A nonsensical timestep must be ignored rather than poison the covariance.
 void test_bad_timestep_is_rejected() {
     NavFilter filter;
@@ -231,6 +355,12 @@ int main() {
     RUN_TEST(test_accel_bias_is_observed_when_held_stationary);
     RUN_TEST(test_coasting_widens_the_envelope_without_moving_wildly);
     RUN_TEST(test_free_fall_from_a_dead_sensor_is_caught);
+    RUN_TEST(test_anchoring_the_barometer_does_not_move_height);
+    RUN_TEST(test_barometer_tracks_a_climb);
+    RUN_TEST(test_barometer_innovation_splits_by_prior_uncertainty);
+    RUN_TEST(test_wrong_barometer_datum_is_absorbed_by_the_offset);
+    RUN_TEST(test_barometer_tightens_the_height_envelope);
+    RUN_TEST(test_general_update_matches_single_state_update);
     RUN_TEST(test_bad_timestep_is_rejected);
     RUN_TEST(test_geo_degree_scales_are_physical);
     RUN_TEST(test_geo_projection_is_relative_to_origin);

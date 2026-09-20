@@ -15,14 +15,31 @@ design. This file covers only what is easy to get wrong when editing.
 
 ## Things that will bite you
 
-**Both I2C buses exist; only bus 0 is wired.** The FeatherS3 breaks out `SDA 8 /
-SCL 9` *and* `SDA1 16 / SCL1 15`. All three sensors are on bus 0. `task scan`
-re-confirms this against the real hardware — run it before assuming a wiring
-problem is a code problem.
+**Two buses, split on purpose.** IMU on bus 0 (`SDA 8 / SCL 9`), GPS + BMP390 on
+bus 1 (`SDA1 16 / SCL1 15`). Not for convenience: on a shared run the GPS's
+intermittent connector took the whole IMU down with it. `task scan` re-confirms
+the layout against real hardware — run it before assuming a wiring problem is a
+code problem.
 
-**One task owns the bus.** The IMU and GPS share one STEMMA run, so all I2C
-traffic is issued from the estimator task on core 1. Do not add an I2C read from
-`loop()` — use the snapshot instead.
+**One task owns both buses.** All I2C traffic is issued from the estimator task
+on core 1. Do not add an I2C read from `loop()` — use the snapshot instead.
+
+**GPIO 39 is LDO2 *and* the LED's power gate.** Driving it low to darken the LED
+cuts power to the GPS and barometer. Send a black pixel instead. `board_power.h`
+owns this pin; `status_led.cpp` deliberately does not touch it.
+
+**Never restart a bus because one device is silent.** An unresponsive device is
+absent; the bus is fine. Tearing it down invalidates every Adafruit_BusIO handle
+on it, and those drivers then return corrupt data while reporting success — this
+is what broke the IMU every time the GPS was unplugged. `I2cServiceWatchdog()`
+distinguishes the cases: if one device is absent the others still complete
+transfers, so only a bus where *nothing* has succeeded for 3 s gets restarted.
+Any restart bumps `I2cBusGeneration()`, and every driver must watch it and
+re-`begin_I2C()`.
+
+**I2C runs at 100 kHz, from measurement.** At 400 kHz the data came back inside
+the sensors' full scale but wrong. See `I2C_CLOCK_HZ` in `include/config.h` for
+the numbers. Raise it only with the same measurement in hand.
 
 **Never drain the GPS by character count.** The PA1010D pads its I2C output with
 `0x0A` when idle, and the Adafruit library discards that padding, so each
@@ -74,6 +91,8 @@ tick jitter.
 | Status LED colours and patterns | `src/status_led.cpp`, `EvaluateStatus()` in `src/main.cpp` |
 | Behaviour when a sensor drops out | `PredictCoasting()`/`IsDiverged()` in `src/nav_filter.h` |
 | Magnetometer hard/soft-iron calibration | `src/mag_cal.h`, driven from `src/imu.cpp` |
+| Barometer fusion, and why it has its own state | `kBaroBias` in `src/nav_filter.h`, `ServiceBaro()` in `src/estimator.cpp` |
+| LDO2 / power-cycle recovery | `src/board_power.{h,cpp}` |
 | Dashboard panels and plotting | `web/index.html` (gzipped into flash by `scripts/embed_web.py`) |
 
 ## Commands
@@ -95,6 +114,13 @@ Everything that can be tested without hardware, is:
   drifting apart on a field name.
 
 **If you change the telemetry schema, change both sides and run `task test-ui`.**
+
+**Verify that an edit actually landed.** These files get edited from more than one
+place at once, and a search-and-replace whose anchor has drifted fails silently —
+the build still succeeds and the field is simply missing at runtime. That is how
+`baro_enabled` ended up absent from the telemetry params block while the test
+that should have caught it had also lost its assertion. Grep for what you just
+added.
 
 ## Style
 

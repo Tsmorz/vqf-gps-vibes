@@ -113,10 +113,13 @@ void HandleParamsCommand(const char* json) {
     update_positive("sigma_gps_pos_v", params.sigma_gps_pos_v, 0.1f, 200.0f);
     update_positive("sigma_gps_vel", params.sigma_gps_vel, 0.01f, 20.0f);
     update_positive("sigma_zupt", params.sigma_zupt, 0.001f, 5.0f);
+    update_positive("sigma_baro", params.sigma_baro, 0.02f, 20.0f);
+    update_positive("sigma_baro_bias", params.sigma_baro_bias, 0.00001f, 1.0f);
     update_positive("tau_acc", params.tau_acc, 0.1f, 60.0f);
     update_positive("tau_mag", params.tau_mag, 0.1f, 120.0f);
     ExtractFlag(json, "zupt_enabled", params.zupt_enabled);
     ExtractFlag(json, "gps_vel_enabled", params.gps_vel_enabled);
+    ExtractFlag(json, "baro_enabled", params.baro_enabled);
 
     EstimatorSetParams(params);
 }

@@ -14,12 +14,14 @@
 namespace {
 
 // FeatherS3 pinout (variants/um_feathers3/pins_arduino.h).
-constexpr int kBus0Sda = 8;    // SDA  -- broken out on the header
-constexpr int kBus0Scl = 9;    // SCL
-constexpr int kBus1Sda = 16;   // SDA1 -- the second, independent bus
-constexpr int kBus1Scl = 15;   // SCL1
-constexpr int kRgbData = 40;   // WS2812B data
-constexpr int kRgbPower = 39;  // must be driven HIGH or the LED stays dark
+constexpr int kBus0Sda = 8;   // SDA  -- broken out on the header
+constexpr int kBus0Scl = 9;   // SCL
+constexpr int kBus1Sda = 16;  // SDA1 -- the second, independent bus
+constexpr int kBus1Scl = 15;  // SCL1
+constexpr int kRgbData = 40;  // WS2812B data
+// GPIO 39 gates LDO2, which powers BOTH the onboard LED and the 3V3 pin that
+// the GPS and barometer run from. It must be HIGH for either to work.
+constexpr int kLdo2Enable = 39;
 
 Adafruit_NeoPixel pixel(1, kRgbData, NEO_GRB + NEO_KHZ800);
 TwoWire bus1(1);
@@ -36,6 +38,9 @@ const char* DeviceName(uint8_t address) {
         case 0x6A:
         case 0x6B:
             return "LSM6DSOX accel+gyro";
+        case 0x76:
+        case 0x77:
+            return "BMP390 pressure+temp";
         default:
             return "unknown";
     }
@@ -69,15 +74,22 @@ void setup() {
     delay(2000);
     Serial.println("\n=== FeatherS3 I2C / LED probe ===");
 
-    pinMode(kRgbPower, OUTPUT);
-    digitalWrite(kRgbPower, HIGH);
+    pinMode(kLdo2Enable, OUTPUT);
+    digitalWrite(kLdo2Enable, HIGH);
+    delay(300);  // let the rail and the GPS come up before scanning
     pixel.begin();
     pixel.setBrightness(40);
 
+    // 100 kHz, matching the firmware -- see I2C_CLOCK_HZ in include/config.h
+    // for why the bus does not run at 400 kHz.
     Wire.begin(kBus0Sda, kBus0Scl);
+    Wire.setClock(100000);
     bus1.begin(kBus1Sda, kBus1Scl);
-    Serial.printf("bus0 = SDA %d / SCL %d      bus1 = SDA %d / SCL %d\n", kBus0Sda, kBus0Scl,
-                  kBus1Sda, kBus1Scl);
+    bus1.setClock(100000);
+    Serial.printf("bus0 \"imu\" = SDA %d / SCL %d    bus1 \"aux\" = SDA %d / SCL %d\n", kBus0Sda,
+                  kBus0Scl, kBus1Sda, kBus1Scl);
+    Serial.println("expected: bus0 -> 0x6A LSM6DSOX, 0x1C LIS3MDL");
+    Serial.println("          bus1 -> 0x10 PA1010D,  0x77 BMP390");
 }
 
 void loop() {
@@ -89,7 +101,7 @@ void loop() {
     pixel.show();
     color_index = (color_index + 1) % 3;
 
-    ScanBus(Wire, "bus0 (Wire)");
-    ScanBus(bus1, "bus1 (Wire1)");
+    ScanBus(Wire, "bus0 \"imu\" (Wire)");
+    ScanBus(bus1, "bus1 \"aux\" (Wire1)");
     delay(3000);
 }

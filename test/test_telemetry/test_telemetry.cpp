@@ -66,6 +66,15 @@ EstimatorSnapshot MakeSnapshot() {
     s.vel_sigma3[1] = 0.75f;
     s.vel_sigma3[2] = 1.5f;
 
+    s.baro_healthy = true;
+    s.baro_pressure_pa = 95431.0f;
+    s.baro_temperature_c = 22.4f;
+    s.baro_altitude_m = 509.25f;
+    s.baro_bias_m = 497.5f;
+    s.baro_bias_sigma3 = 1.8f;
+    s.baro_height_m = 11.75f;
+    s.baro_failures = 0;
+
     s.gps_fix = true;
     s.gps_satellites = 9;
     s.gps_hdop = 1.2f;
@@ -166,6 +175,22 @@ void test_frame_contains_every_key_the_dashboard_reads() {
         "\"tau_mag\":",
         "\"zupt_enabled\":",
         "\"gps_vel_enabled\":",
+        // Magnetometer calibration state.
+        "\"magcal\":",
+        "\"done\":",
+        "\"busy\":",
+        "\"prog\":",
+        "\"field\":",
+        // Barometer readings, and the knobs that govern its fusion.
+        "\"baro\":",
+        "\"pa\":",
+        "\"tc\":",
+        "\"alt\":",
+        "\"bias\":",
+        "\"bias3s\":",
+        "\"sigma_baro\":",
+        "\"sigma_baro_bias\":",
+        "\"baro_enabled\":",
     };
     for (const char* key : required) {
         TEST_ASSERT_NOT_NULL_MESSAGE(strstr(buffer, key), key);

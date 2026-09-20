@@ -164,6 +164,32 @@ select{background:#21262d;color:var(--text);border:1px solid var(--line);
 </section>
 
 <section>
+  <h2>Barometer <span class="hint">height detail, GPS-anchored</span></h2>
+  <canvas id="cv-baro" height="150"></canvas>
+  <div class="legend">
+    <span style="color:var(--accent)"><b>—</b> fused up</span>
+    <span style="color:#a78bfa"><b>—</b> baro, offset removed</span>
+    <span style="color:#4dabf7"><b>·</b> GPS alt</span>
+  </div>
+  <div class="readout">
+    <div><span>pressure</span><span id="r-bpa">—</span></div>
+    <div><span>temp</span><span id="r-btc">—</span></div>
+    <div><span>baro height</span><span id="r-bh">—</span></div>
+    <div><span>offset</span><span id="r-bbias">—</span></div>
+  </div>
+  <div class="row">
+    <label class="toggle"><input type="checkbox" id="k-baro"> use barometer</label>
+  </div>
+  <p class="note">
+    The BMP390 has no built-in altitude — it reports pressure, and height comes
+    from a formula needing a sea-level reference nobody knows. So the filter
+    carries that offset as a state: the barometer supplies fine height detail
+    while GPS anchors the absolute value. Switch it off to see the up channel's
+    ±3σ envelope widen onto GPS altitude alone.
+  </p>
+</section>
+
+<section>
   <h2>Filter tuning</h2>
   <div id="knobs"></div>
   <div class="row">
@@ -209,6 +235,10 @@ const KNOBS = [
    about:'Assumed 1σ accuracy of ground speed and course. Course is meaningless when nearly stationary.'},
   {k:'sigma_zupt',       n:'zero-velocity noise', u:'m/s',      min:0.002,  max:1,   d:4,
    about:'How firmly a detected rest pins velocity to zero. This is what keeps the filter bounded indoors with no fix.'},
+  {k:'sigma_baro',       n:'baro noise',          u:'m',        min:0.02,   max:10,  d:3,
+   about:'Assumed 1σ accuracy of a barometric height sample. The BMP390 resolves centimetres, but doors and gusts move the pressure far more — that is what this covers.'},
+  {k:'sigma_baro_bias',  n:'baro drift',          u:'m/√s',     min:0.0001, max:0.2, d:5,
+   about:'How fast the barometer\'s altitude offset is allowed to wander. Weather moves it millimetres per second. Too high and the offset absorbs real climbs.'},
   {k:'tau_acc',          n:'VQF τ accel',         u:'s',        min:0.2,    max:30,  d:2,
    about:'VQF time constant for gravity correcting gyro drift in roll and pitch. Higher = smoother but slower to settle.'},
   {k:'tau_mag',          n:'VQF τ mag',           u:'s',        min:0.5,    max:60,  d:2,
@@ -266,6 +296,9 @@ function ingest(f){
     a:f.imu.a, g:f.imu.g, m:f.imu.m,
     p:f.nav.p, p3s:f.nav.p3s, v:f.nav.v, v3s:f.nav.v3s,
     gps:f.gps.enuok ? f.gps.enu : null,
+    // Barometer height with its estimated offset removed, so it is directly
+    // comparable with the filter's up state.
+    bh:[0, 0, f.baro.ok ? f.baro.alt - f.baro.bias : null],
   });
   const cutoff = f.t/1000 - 180;              // keep the largest window plus slack
   while (history.length && history[0].t < cutoff) history.shift();
@@ -338,7 +371,10 @@ function drawSeries(canvas, series, band, label, minSpan){
   let lo = Infinity, hi = -Infinity;
   for (const r of points){
     for (const s of series){
-      const v = r[s.key][s.index];
+      // A series can be absent for a sample -- the barometer's height is null
+      // whenever the sensor is missing -- and those points are simply skipped.
+      const v = r[s.key]?.[s.index];
+      if (v == null) continue;
       if (v < lo) lo = v;
       if (v > hi) hi = v;
     }
@@ -409,10 +445,14 @@ function drawSeries(canvas, series, band, label, minSpan){
   for (const s of series){
     ctx.strokeStyle = s.color;
     ctx.beginPath();
-    points.forEach((r, i) => {
-      const x = X(r.t), y = Y(r[s.key][s.index]);
-      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    });
+    let drawing = false;
+    for (const r of points){
+      const v = r[s.key]?.[s.index];
+      if (v == null){ drawing = false; continue; }  // break the line over gaps
+      const x = X(r.t), y = Y(v);
+      drawing ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      drawing = true;
+    }
     ctx.stroke();
   }
 
@@ -628,6 +668,7 @@ function seedKnobs(params){
   }
   $('k-zupt').checked = !!params.zupt_enabled;
   $('k-gvel').checked = !!params.gps_vel_enabled;
+  $('k-baro').checked = !!params.baro_enabled;
 }
 
 function bindControls(){
@@ -635,6 +676,8 @@ function bindControls(){
     send({cmd:'params', zupt_enabled: e.target.checked ? 1 : 0}));
   $('k-gvel').addEventListener('change', e =>
     send({cmd:'params', gps_vel_enabled: e.target.checked ? 1 : 0}));
+  $('k-baro').addEventListener('change', e =>
+    send({cmd:'params', baro_enabled: e.target.checked ? 1 : 0}));
 
   $('btn-reset').addEventListener('click', () => {
     send({cmd:'reset'});
@@ -703,6 +746,11 @@ function render(){
     drawSeries($('cv-pn'), [{key:'p', index:1, color:'#d29922'}], 'p3s', 'north');
     drawSeries($('cv-pu'), [{key:'p', index:2, color:'#d29922'}], 'p3s', 'up');
 
+    // Fused height against the barometer's own, so the contribution is visible.
+    drawSeries($('cv-baro'), [
+      {key:'p', index:2, color:'#d29922'},
+      {key:'bh', index:2, color:'#a78bfa'}], 'p3s', 'up (m)', 1.0);
+
     drawSeries($('cv-ve'), [{key:'v', index:0, color:'#d29922'}], 'v3s', 'vE');
     drawSeries($('cv-vn'), [{key:'v', index:1, color:'#d29922'}], 'v3s', 'vN');
     drawSeries($('cv-vu'), [{key:'v', index:2, color:'#d29922'}], 'v3s', 'vU');
@@ -726,6 +774,13 @@ function render(){
     $('r-vn').textContent = nav.v[1].toFixed(2) + ' ±' + nav.v3s[1].toFixed(2);
     $('r-vu').textContent = nav.v[2].toFixed(2) + ' ±' + nav.v3s[2].toFixed(2);
     $('r-ba').textContent = nav.ba.map(v => v.toFixed(3)).join(' ');
+
+    const baro = latest.baro;
+    $('r-bpa').textContent = baro.ok ? (baro.pa / 100).toFixed(2) + ' hPa' : 'absent';
+    $('r-btc').textContent = baro.ok ? baro.tc.toFixed(1) + ' °C' : '—';
+    $('r-bh').textContent = baro.ok ? (baro.alt - baro.bias).toFixed(2) + ' m' : '—';
+    $('r-bbias').textContent = baro.ok
+      ? baro.bias.toFixed(1) + ' ±' + baro.bias3s.toFixed(1) + ' m' : '—';
   }
   requestAnimationFrame(render);
 }
