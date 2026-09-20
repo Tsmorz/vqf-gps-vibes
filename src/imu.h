@@ -19,9 +19,10 @@ struct ImuSample {
 
 // State of the magnetometer calibration, for the dashboard.
 struct MagCalStatus {
-    bool calibrated = false;  // a fit is loaded and being applied
-    bool collecting = false;  // a sweep is in progress
-    float progress = 0.0f;    // 0..1 through the sweep
+    bool calibrated = false;        // a fit is loaded and being applied
+    bool collecting = false;        // a sweep is in progress
+    float progress = 0.0f;          // 0..1 through the sweep
+    float implied_field_ut = 0.0f;  // field strength the sweep implies so far
     int samples = 0;
     float offset[3] = {0, 0, 0};
     float field_ut = 0.0f;  // magnitude of the latest corrected reading

@@ -180,6 +180,7 @@ void test_frame_contains_every_key_the_dashboard_reads() {
         "\"done\":",
         "\"busy\":",
         "\"prog\":",
+        "\"implied\":",
         "\"field\":",
         // Barometer readings, and the knobs that govern its fusion.
         "\"baro\":",

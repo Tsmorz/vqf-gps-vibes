@@ -45,9 +45,10 @@ size_t BuildTelemetryFrame(char* buffer, size_t buffer_size, const EstimatorSnap
         append(WriteVector(buffer + used, buffer_size - used, "gbias", s.gyro_bias, 5)) &&
 
         append(snprintf(buffer + used, buffer_size - used,
-                        "},\"magcal\":{\"done\":%d,\"busy\":%d,\"prog\":%.2f,\"field\":%.1f",
+                        "},\"magcal\":{\"done\":%d,\"busy\":%d,\"prog\":%.2f,\"field\":%.1f,"
+                        "\"implied\":%.1f",
                         s.mag_calibrated ? 1 : 0, s.mag_collecting ? 1 : 0, s.mag_cal_progress,
-                        s.mag_field_ut)) &&
+                        s.mag_field_ut, s.mag_cal_implied_ut)) &&
 
         append(snprintf(buffer + used, buffer_size - used,
                         "},\"baro\":{\"ok\":%d,\"pa\":%.0f,\"tc\":%.1f,\"alt\":%.2f,"

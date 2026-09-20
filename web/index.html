@@ -116,7 +116,12 @@ select{background:#21262d;color:var(--text);border:1px solid var(--line);
     is calibrated that offset distorts the horizontal component heading is
     derived from, so yaw is noisy while roll and pitch are unaffected. Press
     Calibrate, then slowly turn the board through every orientation — including
-    upside down — until it reaches 100 %, and press it again to finish.
+    upside down, and about all three axes. Watch the implied field strength:
+    keep turning until it <em>stops rising</em>, then press Finish. It should
+    settle near your local field, which is 25–65 µT depending on latitude.
+    Calibrate outdoors if you can — indoors, building steel both weakens and
+    distorts the field, and no calibration can fix a field that changes as the
+    board moves.
   </p>
 </section>
 
@@ -764,8 +769,12 @@ function render(){
     $('r-mnorm').textContent = mag3(m).toFixed(1) + ' µT';
 
     const cal = latest.magcal;
+    // During a sweep the implied field strength matters more than the bar:
+    // it climbs as the extremes are reached and plateaus once the sphere is
+    // covered. Stopping before it plateaus is what produces a confidently
+    // wrong offset, and only the operator can see that it has stopped rising.
     $('r-magcal').textContent = cal.busy
-      ? Math.round(cal.prog * 100) + '% — keep turning'
+      ? Math.round(cal.prog * 100) + '% — implies ' + cal.implied.toFixed(1) + ' µT, keep turning'
       : (cal.done ? 'calibrated' : 'not calibrated');
     $('btn-magcal').textContent = cal.busy ? 'Finish calibration' : 'Calibrate magnetometer';
 

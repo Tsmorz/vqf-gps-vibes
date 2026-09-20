@@ -229,6 +229,7 @@ void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz
     next.mag_calibrated = mag_status.calibrated;
     next.mag_collecting = mag_status.collecting;
     next.mag_cal_progress = mag_status.progress;
+    next.mag_cal_implied_ut = mag_status.implied_field_ut;
     next.mag_field_ut = mag_status.field_ut;
 
     const GpsSample fix = GpsLatest();

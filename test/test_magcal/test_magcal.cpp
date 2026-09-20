@@ -117,6 +117,36 @@ void test_single_axis_rotation_is_refused() {
     TEST_ASSERT_FALSE(cal.valid);
 }
 
+// The implied field strength is the number the operator actually steers by, so
+// a full sweep of a known field has to recover that field.
+void test_full_sweep_implies_the_true_field() {
+    MagCalCollector collector;
+    SweepFullSphere(collector);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, kFieldUt, collector.implied_field_ut());
+}
+
+// A sweep that covers only part of the sphere implies a field weaker than the
+// real one. This is the failure that produced a confidently wrong offset on
+// the bench -- the old threshold accepted it and reported 100%.
+void test_partial_sweep_is_refused_and_reads_low() {
+    MagCalCollector collector;
+    // Half the polar range and half the azimuth: a plausible hurried sweep.
+    for (int i = 0; i <= 9; i++) {
+        for (int j = 0; j < 18; j++) {
+            float reading[3];
+            SimulateReading(static_cast<float>(M_PI) * i / 18.0f,
+                            static_cast<float>(M_PI) * j / 18.0f, reading);
+            collector.Add(reading);
+        }
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(collector.implied_field_ut() < kFieldUt,
+                             "a partial sweep must imply a weaker field than the truth");
+    MagCalibration cal;
+    TEST_ASSERT_FALSE_MESSAGE(collector.Solve(cal), "a partial sweep must not be accepted");
+    TEST_ASSERT_TRUE(collector.progress() < 1.0f);
+}
+
 // Progress has to reach 1.0 for a full sweep and stay near 0 for no data, so
 // the dashboard's percentage means something.
 void test_progress_tracks_the_sweep() {
@@ -138,6 +168,8 @@ int main() {
     RUN_TEST(test_full_sweep_recovers_the_true_field);
     RUN_TEST(test_fit_recovers_the_hard_iron_offset);
     RUN_TEST(test_single_axis_rotation_is_refused);
+    RUN_TEST(test_full_sweep_implies_the_true_field);
+    RUN_TEST(test_partial_sweep_is_refused_and_reads_low);
     RUN_TEST(test_progress_tracks_the_sweep);
     return UNITY_END();
 }

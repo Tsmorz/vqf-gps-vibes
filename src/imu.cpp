@@ -400,9 +400,11 @@ void ImuMagCalStart() {
 bool ImuMagCalFinish() {
     MagCalibration fitted;
     bool solved = false;
+    float implied_field = 0.0f;
 
     portENTER_CRITICAL(&mag_lock);
     mag_collecting = false;
+    implied_field = mag_collector.implied_field_ut();
     solved = mag_collector.Solve(fitted);
     if (solved) {
         mag_cal = fitted;
@@ -410,13 +412,18 @@ bool ImuMagCalFinish() {
     portEXIT_CRITICAL(&mag_lock);
 
     if (!solved) {
-        Serial.println("[imu] mag calibration rejected -- the board was not turned far enough");
+        Serial.printf(
+            "[imu] mag calibration rejected -- the sweep implies only %.1f uT; turn the "
+            "board through every orientation until that figure stops rising\n",
+            implied_field);
         return false;
     }
     SaveMagCalibration(fitted);
-    Serial.printf("[imu] mag calibrated: offset %.1f %.1f %.1f uT  scale %.3f %.3f %.3f\n",
-                  fitted.offset[0], fitted.offset[1], fitted.offset[2], fitted.scale[0],
-                  fitted.scale[1], fitted.scale[2]);
+    Serial.printf(
+        "[imu] mag calibrated: offset %.1f %.1f %.1f uT  scale %.3f %.3f %.3f  "
+        "implied field %.1f uT\n",
+        fitted.offset[0], fitted.offset[1], fitted.offset[2], fitted.scale[0], fitted.scale[1],
+        fitted.scale[2], implied_field);
     return true;
 }
 
@@ -441,6 +448,7 @@ MagCalStatus ImuMagCalStatus() {
     status.calibrated = mag_cal.valid;
     status.collecting = mag_collecting;
     status.progress = mag_collector.progress();
+    status.implied_field_ut = mag_collector.implied_field_ut();
     status.samples = mag_collector.sample_count();
     for (int axis = 0; axis < 3; axis++) {
         status.offset[axis] = mag_cal.offset[axis];

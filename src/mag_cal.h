@@ -25,10 +25,22 @@
 
 #include <math.h>
 
-// How far each axis must swing during a sweep before the fit is trusted.
-// A full rotation exposes each axis to +|B| and -|B|, so a span well over
-// half the local field strength means the board really was turned over.
-constexpr float kMagCalMinSpanUt = 30.0f;
+// A full rotation exposes each axis to +|B| and -|B|, so a complete sweep
+// spans 2|B| on every axis -- roughly 100 uT in mid-latitudes, not 50. An
+// earlier version required only 30 uT here and reported "100%" when barely a
+// third of the needed range had been covered, so sweeps were being accepted
+// that left the field strength 20% short.
+//
+// The Earth's field is between 25 and 65 uT everywhere on the surface, so a
+// genuine sweep cannot imply less than 25 uT. That is the floor used here; it
+// is a physical bound rather than a guess, and it is deliberately the *global*
+// minimum so the check never rejects a valid sweep somewhere weak.
+constexpr float kMagCalMinFieldUt = 25.0f;
+constexpr float kMagCalMinSpanUt = 2.0f * kMagCalMinFieldUt;
+
+// How isotropic the coverage must be. Rotating mostly about one axis leaves
+// the others under-swept, and their spans give it away.
+constexpr float kMagCalMinSpanRatio = 0.75f;
 
 struct MagCalibration {
     bool valid = false;
@@ -86,16 +98,30 @@ class MagCalCollector {
         return isfinite(range) && range > 0.0f ? range : 0.0f;
     }
 
-    // How far along the sweep is, as 0..1 against the acceptance threshold.
-    // Driven by the worst axis, since that is the one still needing rotation.
+    // The field strength this sweep implies so far, in microtesla.
+    //
+    // This is the number to watch while sweeping: it rises as the extremes are
+    // reached and plateaus once the sphere is covered. Stopping before it
+    // plateaus is what produces an offset that is confidently wrong, and no
+    // progress bar can detect that on its own -- only the operator can see
+    // that the number has stopped climbing.
+    float implied_field_ut() const {
+        return (span(0) + span(1) + span(2)) / 6.0f;
+    }
+
+    // How far along the sweep is, as 0..1. Driven by the worst axis against
+    // the physical floor, and by how isotropic the coverage is -- both have to
+    // be satisfied, and the lower of the two is the honest answer.
     float progress() const {
         float worst = span(0);
+        float best = span(0);
         for (int axis = 1; axis < 3; axis++) {
-            if (span(axis) < worst) {
-                worst = span(axis);
-            }
+            worst = span(axis) < worst ? span(axis) : worst;
+            best = span(axis) > best ? span(axis) : best;
         }
-        const float fraction = worst / kMagCalMinSpanUt;
+        const float against_floor = worst / kMagCalMinSpanUt;
+        const float isotropy = best > 0.0f ? (worst / best) / kMagCalMinSpanRatio : 0.0f;
+        const float fraction = against_floor < isotropy ? against_floor : isotropy;
         return fraction > 1.0f ? 1.0f : fraction;
     }
 
@@ -103,10 +129,18 @@ class MagCalCollector {
     // which is what stops a sweep that only spun about one axis from being
     // accepted -- that would leave two axes uncorrected.
     bool Solve(MagCalibration& out) const {
+        float worst = span(0);
+        float best = span(0);
         for (int axis = 0; axis < 3; axis++) {
             if (span(axis) < kMagCalMinSpanUt) {
                 return false;
             }
+            worst = span(axis) < worst ? span(axis) : worst;
+            best = span(axis) > best ? span(axis) : best;
+        }
+        // Reject a sweep that went round one axis far more than the others.
+        if (worst < kMagCalMinSpanRatio * best) {
+            return false;
         }
 
         const float mean_span = (span(0) + span(1) + span(2)) / 3.0f;
