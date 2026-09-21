@@ -18,7 +18,19 @@ struct GpsSample {
     float course_deg = 0.0f;
     uint8_t satellites = 0;
     float hdop = 0.0f;
-    uint32_t fix_millis = 0;  // millis() when this fix was parsed
+
+    // millis() at the moment the sentence carrying this fix was seen to be
+    // complete -- before parsing it, which is work that happens after the data
+    // has already arrived and has nothing to do with when the fix was taken.
+    uint32_t fix_millis = 0;
+
+    // The receiver's own UTC time of day for the fix, in milliseconds. Carried
+    // for observability only: nothing steers on it. Comparing it against
+    // fix_millis is the only way, short of wiring the PA1010D's PPS output to
+    // an interrupt, to see how far behind the epoch a fix actually arrives --
+    // the delay inside the receiver and on the wire is invisible from this end.
+    uint32_t epoch_tod_ms = 0;
+    bool epoch_valid = false;
 };
 
 // Attempts to bring the receiver up and configure its NMEA output. Safe to

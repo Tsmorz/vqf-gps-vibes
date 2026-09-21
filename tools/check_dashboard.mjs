@@ -11,13 +11,17 @@
 // name, and any exception thrown on the render path. Canvas output is not
 // inspected -- only that drawing happened.
 //
-// Usage: node tools/check_dashboard.mjs <frame.json>
+// Usage: node tools/check_dashboard.mjs <frame.json> [spectrum.json]
+//
+// The spectrum frame is a second message type on the same socket, so it comes
+// from the same encoder and the same test, in its own file.
 
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
 const html = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
 const frameJson = readFileSync(process.argv[2], 'utf8').trim();
+const spectrumJson = process.argv[3] ? readFileSync(process.argv[3], 'utf8').trim() : null;
 
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 if (!script) throw new Error('no <script> block found in web/index.html');
@@ -115,6 +119,8 @@ else {
   const second = JSON.parse(frameJson);
   second.t += 50;
   socket.onmessage({data: JSON.stringify(second)});
+  // The spectrum rides the same socket as its own message type.
+  if (spectrumJson) socket.onmessage({data: spectrumJson});
   // And a malformed one, which must be ignored rather than kill the page.
   socket.onmessage({data: '{"t":not json'});
 }
@@ -154,6 +160,12 @@ if (canonical) {
   expect('r-ve', '0.50 ±0.75');
   expect('r-sat', 9);
 
+  // The trust the filter actually applied, which is the point of showing it:
+  // it must track the frame, not the slider the frame's sigma knob carries.
+  const gps = JSON.parse(frameJson).gps;
+  expect('r-gsig', `±${gps.sig.toFixed(1)} m`);
+  expect('r-grej', gps.rej);
+
   // Header chips reflect health.
   expect('c-status', 'normal');
   expect('c-gps', 'gps fix 9');
@@ -173,11 +185,94 @@ if (canonical) {
   expect('r-mnorm', '48.9 µT');
   expect('r-magcal', 'calibrated');
   expect('btn-magcal', 'Calibrate magnetometer');
+
+  // The aux rail defaults to on, so the button offers to cut it.
+  expect('r-aux', 'on');
+  expect('btn-aux', 'Power down GPS + baro');
+
+  // Range dropdowns seeded from the device rather than left on whichever
+  // option the page happened to list first.
+  const ranges = JSON.parse(frameJson).params;
+  for (const [id, key] of [['r-accel_range_g', 'accel_range_g'],
+                           ['r-gyro_range_dps', 'gyro_range_dps'],
+                           ['r-mag_range_gauss', 'mag_range_gauss']]) {
+    const got = elements.get(id)?.value;
+    if (got !== String(ranges[key])) {
+      failures.push(`#${id} = ${JSON.stringify(got)}, expected ${JSON.stringify(String(ranges[key]))}`);
+    }
+  }
+
+  // A panel whose source is on must be on screen...
+  for (const id of ['sec-pos3d', 'sec-pos', 'sec-vel', 'sec-baro']) {
+    if (elements.get(id)?.hidden) failures.push(`#${id} was hidden while its source is enabled`);
+  }
+
+  // ...and must go when that source is switched off. Position and velocity are
+  // still being propagated from dead reckoning at this point, so nothing but
+  // this rule stops the page presenting them as measurements.
+  const off = JSON.parse(frameJson);
+  off.t += 100;
+  off.params.gps_enabled = 0;
+  off.params.baro_enabled = 0;
+  socket.onmessage({data: JSON.stringify(off)});
+
+  for (const id of ['sec-pos3d', 'sec-pos', 'sec-vel', 'sec-baro']) {
+    if (!elements.get(id)?.hidden) failures.push(`#${id} was still shown with its source off`);
+  }
+  if (!elements.get('k-gvel')?.disabled) {
+    failures.push('#k-gvel stayed enabled with GPS fusion off');
+  }
+
+  // ── Spectrum panel ───────────────────────────────────────────────────────
+  // The analyser's state is echoed in the telemetry frame, so the panel and
+  // its source dropdown must follow the device rather than the page defaults.
+  const specState = JSON.parse(frameJson).spec;
+  if (!specState) {
+    failures.push('the telemetry frame carries no "spec" block');
+  } else {
+    if (elements.get('spec-body')?.hidden) {
+      failures.push('#spec-body was hidden while the analyser is switched on');
+    }
+    if (!elements.get('k-spec')?.checked) {
+      failures.push('#k-spec was not seeded from the frame');
+    }
+    const src = elements.get('sel-spec-src')?.value;
+    if (src !== specState.src) {
+      failures.push(`#sel-spec-src = ${JSON.stringify(src)}, expected ${JSON.stringify(specState.src)}`);
+    }
+  }
+
+  if (spectrumJson) {
+    // Derived from the frame, not hardcoded: the window length and the bin
+    // values are firmware constants, and a literal here would turn any change
+    // to them into a spurious failure.
+    const s = JSON.parse(spectrumJson);
+    const df = s.fs / s.n;
+    // Whichever bin is loudest at or above the page's 5 Hz default floor.
+    const first = Math.max(1, Math.ceil(5 / df));
+    let peakBin = -1, peakValue = 0;
+    for (const axis of s.bins) {
+      for (let i = first; i < axis.length; i++) {
+        if (axis[i] > peakValue) { peakValue = axis[i]; peakBin = i; }
+      }
+    }
+    const unit = {accel: 'm/s²', gyro: 'rad/s'}[s.src];
+
+    expect('r-spec-fs', s.fs.toFixed(1) + ' Hz');
+    expect('r-spec-res', df.toFixed(2) + ' Hz');
+    // The dominant readout comes off the peak hold, the live one off this
+    // frame; with a single frame seeding the hold, both must agree.
+    expect('r-spec-f', (peakBin * df).toFixed(1) + ' Hz');
+    expect('r-spec-live', (peakBin * df).toFixed(1) + ' Hz');
+    if (!String(text('r-spec-a')).endsWith(unit)) {
+      failures.push(`#r-spec-a = ${JSON.stringify(text('r-spec-a'))}, expected it to end in ${unit}`);
+    }
+  }
 } else {
   console.log('live frame -- checking structurally');
   const populated = ['r-roll','r-pitch','r-yaw','r-rest','r-pe','r-pn','r-pu',
-                     'r-ve','r-vn','r-vu','r-sat','r-ba','r-gbias',
-                     'r-anorm','r-mnorm','r-magcal',
+                     'r-ve','r-vn','r-vu','r-sat','r-gsig','r-ba','r-gbias',
+                     'r-anorm','r-mnorm','r-magcal','r-aux',
                      'c-status','c-gps','c-rate','v-sigma_accel','v-tau_mag'];
   for (const id of populated) {
     const got = text(id);

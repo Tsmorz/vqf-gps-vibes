@@ -59,6 +59,7 @@ h1 .mark{width:11px;height:11px;border-radius:3px;margin-right:9px;flex:none;
 /* ── Layout ──────────────────────────────────────────────────────────── */
 main{display:grid;gap:18px;padding:18px 22px 40px;max-width:1600px;margin:0 auto;
   grid-template-columns:repeat(auto-fit,minmax(380px,1fr));align-items:start}
+[hidden]{display:none !important}
 section{background:linear-gradient(180deg,var(--panel-top),var(--panel));
   border:1px solid var(--line);border-radius:var(--radius);
   padding:15px 17px 17px;min-width:0;
@@ -101,6 +102,10 @@ canvas+canvas{margin-top:7px}
   border:1px solid var(--dim)}
 .legend .key i.band{width:14px;height:9px;border-radius:2px;
   background:rgba(217,89,38,.22);border:1px solid rgba(217,89,38,.4)}
+/* Peak hold is drawn as a dashed line in each series' own colour, so the key
+   shows the dash rather than a hue it does not have one of. */
+.legend .key i.hold{background:repeating-linear-gradient(90deg,
+  var(--dim) 0 3px,transparent 3px 6px)}
 .legend .key.muted{color:var(--faint)}
 
 /* ── Controls ────────────────────────────────────────────────────────── */
@@ -136,6 +141,8 @@ button.primary{border-color:#6b2622;color:#ff9c96;
   background:linear-gradient(180deg,#241619,#1c1215)}
 button.primary:hover{background:linear-gradient(180deg,#31191c,#241619);
   border-color:#8b2c26}
+.range{display:flex;align-items:center;gap:6px;color:var(--faint);font-size:12px}
+.range select{font-size:12px;padding:3px 6px}
 .toggle{display:flex;align-items:center;gap:7px;cursor:pointer;
   user-select:none;-webkit-user-select:none}
 .toggle input{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
@@ -230,6 +237,17 @@ select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
     <div><span>|mag|</span><span id="r-mnorm">—</span></div>
     <div><span>mag cal</span><span id="r-magcal">—</span></div>
   </div>
+  <div class="row" id="ranges"></div>
+  <p class="note" id="ranges-note">
+    Full-scale ranges. Each sets what the chip can represent before it clips —
+    a clipped sample is thrown away rather than integrated, because all it says
+    is “at least full scale”. Widen one if the traces above flatten against a
+    ceiling during real motion. It is not free: full scale also sets the
+    quantisation step, so ±16 g resolves four times as coarsely as ±4 g and
+    raises the noise floor the filter was tuned against. Changing the
+    accelerometer range makes the filter forget its learned accel bias, which
+    takes a few seconds of GPS to re-learn.
+  </p>
   <div class="row">
     <button id="btn-magcal">Calibrate magnetometer</button>
     <button id="btn-magclear">Clear</button>
@@ -249,7 +267,61 @@ select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
   </p>
 </section>
 
-<section>
+<section id="sec-spec">
+  <h2>Spectrum <span class="hint" id="h-spec">off</span></h2>
+  <div class="row" style="margin-top:0">
+    <label class="toggle"><input type="checkbox" id="k-spec"> spectral analysis</label>
+    <label class="range"><span>source</span><select id="sel-spec-src">
+      <option value="accel">accel</option>
+      <option value="gyro">gyro</option>
+    </select></label>
+  </div>
+  <div id="spec-body" hidden>
+    <canvas id="cv-spec" height="230"></canvas>
+    <div class="legend">
+      <span class="key"><i style="background:var(--x)"></i>x</span>
+      <span class="key"><i style="background:var(--y)"></i>y</span>
+      <span class="key"><i style="background:var(--z)"></i>z</span>
+      <span class="key muted"><i class="hold"></i>peak hold</span>
+    </div>
+    <div class="readout">
+      <div><span>dominant</span><span id="r-spec-f">—</span></div>
+      <div><span>amplitude</span><span id="r-spec-a">—</span></div>
+      <div><span>live peak</span><span id="r-spec-live">—</span></div>
+      <div><span>resolution</span><span id="r-spec-res">—</span></div>
+      <div><span>sampled at</span><span id="r-spec-fs">—</span></div>
+    </div>
+    <div class="row">
+      <label class="range"><span>ignore below</span><select id="sel-spec-floor">
+        <option value="0">0 Hz</option>
+        <option value="2">2 Hz</option>
+        <option value="5" selected>5 Hz</option>
+        <option value="10">10 Hz</option>
+      </select></label>
+      <label class="toggle"><input type="checkbox" id="k-spec-log" checked> log scale</label>
+      <button id="btn-spec-clear">Clear peak hold</button>
+    </div>
+  </div>
+  <p class="note">
+    Excite the structure the board is attached to — tap it, step the throttle,
+    let go of a deflection — and watch which frequencies keep ringing once the
+    excitation has stopped. The solid traces are the last 1.28 s; the faint
+    ones hold the highest value each bin has reached, so a mode that rang once
+    and faded stays on screen until you clear it. That hold is the reading to
+    take off a ringdown, because by the time you look at the live trace the
+    ring is already gone.
+  </p>
+  <p class="note">
+    Bins are 0.78 Hz wide and the axis stops at 100 Hz, which is where the
+    IMU's own anti-alias filter stops. Sampling is the estimator's 200 Hz tick,
+    not the 20 Hz telemetry the other panels are drawn from — so nothing here
+    is aliased by the link. <em>Ignore below</em> only moves the dominant
+    readout, not the plot: hand-holding the board puts 1–3 Hz of motion into
+    the accelerometer that would otherwise win every time.
+  </p>
+</section>
+
+<section id="sec-pos3d">
   <h2>Position — local ENU <span class="hint">drag to orbit</span></h2>
   <canvas id="cv-pos3d" height="300"></canvas>
   <div class="legend">
@@ -263,11 +335,13 @@ select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
     <div><span>up</span><span id="r-pu">—</span></div>
     <div><span>sats</span><span id="r-sat">—</span></div>
     <div><span>hdop</span><span id="r-hdop">—</span></div>
+    <div><span>trusted to</span><span id="r-gsig">—</span></div>
     <div><span>fixes used</span><span id="r-nfix">—</span></div>
+    <div><span>fixes dropped</span><span id="r-grej">—</span></div>
   </div>
 </section>
 
-<section>
+<section id="sec-pos">
   <h2>Position vs time <span class="hint">shaded band = ±3σ</span></h2>
   <canvas id="cv-pe" height="112"></canvas>
   <canvas id="cv-pn" height="112"></canvas>
@@ -280,7 +354,7 @@ select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
   </div>
 </section>
 
-<section>
+<section id="sec-vel">
   <h2>Velocity vs time <span class="hint">shaded band = ±3σ</span></h2>
   <canvas id="cv-ve" height="112"></canvas>
   <canvas id="cv-vn" height="112"></canvas>
@@ -298,7 +372,7 @@ select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
   </div>
 </section>
 
-<section>
+<section id="sec-baro">
   <h2>Barometer <span class="hint">height detail, GPS-anchored</span></h2>
   <canvas id="cv-baro" height="150"></canvas>
   <div class="legend">
@@ -324,11 +398,30 @@ select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
   </p>
 </section>
 
+<section>
+  <h2>Power <span class="hint">GPS + barometer rail</span></h2>
+  <div class="readout">
+    <div><span>GPS + baro rail</span><span id="r-aux">—</span></div>
+  </div>
+  <div class="row">
+    <button id="btn-aux">Power down GPS + baro</button>
+  </div>
+  <p class="note">
+    Cuts the board's switchable regulator (LDO2), which feeds the GPS receiver
+    and the barometer, to save battery when you only need orientation. Position
+    and height then coast on the IMU and drift. Powering back up gives the GPS
+    a cold start, so expect a wait for a fix. The board's status LED shares that
+    rail and goes dark while it is off. Sleep with the BOOT button for the
+    lowest draw of all.
+  </p>
+</section>
+
 <section class="tuning">
   <h2>Filter tuning</h2>
   <div id="knobs"></div>
   <div class="row">
     <label class="toggle"><input type="checkbox" id="k-zupt"> zero-velocity updates</label>
+    <label class="toggle"><input type="checkbox" id="k-gps"> use GPS</label>
     <label class="toggle"><input type="checkbox" id="k-gvel"> use GPS velocity</label>
   </div>
   <div class="row">
@@ -365,11 +458,11 @@ const KNOBS = [
   {k:'sigma_accel_bias', n:'accel bias walk',     u:'m/s³/√Hz', min:0.0001, max:0.5, d:5,
    about:'How quickly accel bias is allowed to wander. Higher = bias is re-learned faster from GPS, at the cost of noisier estimates.'},
   {k:'sigma_gps_pos_h',  n:'GPS horiz. noise',    u:'m',        min:0.2,    max:50,  d:2,
-   about:'Assumed 1σ horizontal accuracy of a fix. Lower = fixes pull harder on east/north.'},
+   about:'1σ horizontal accuracy of a good fix — one at HDOP 1.0 with six or more satellites. A fix the receiver reports as worse than that is widened from here; see “trusted to” for what the last one was actually worth.'},
   {k:'sigma_gps_pos_v',  n:'GPS vert. noise',     u:'m',        min:0.2,    max:100, d:2,
-   about:'Assumed 1σ vertical accuracy. Consumer GNSS altitude is roughly twice as noisy as horizontal.'},
+   about:'Same, vertically. Consumer GNSS altitude is roughly twice as noisy as horizontal, and it is scaled by the same reported quality.'},
   {k:'sigma_gps_vel',    n:'GPS velocity noise',  u:'m/s',      min:0.02,   max:10,  d:3,
-   about:'Assumed 1σ accuracy of ground speed and course. Course is meaningless when nearly stationary.'},
+   about:'1σ accuracy of ground speed and course from a good fix, scaled by the same reported quality. Course is meaningless when nearly stationary.'},
   {k:'sigma_zupt',       n:'zero-velocity noise', u:'m/s',      min:0.002,  max:1,   d:4,
    about:'How firmly a detected rest pins velocity to zero. This is what keeps the filter bounded indoors with no fix.'},
   {k:'sigma_baro',       n:'baro noise',          u:'m',        min:0.02,   max:10,  d:3,
@@ -386,6 +479,15 @@ const KNOBS = [
 // so this is the one place they are duplicated. See the note there for why the
 // warm axis slot is orange and not red, and re-run the dataviz validator rather
 // than picking a replacement hue by eye.
+// Full-scale ranges. Discrete hardware settings rather than continuous knobs:
+// the chips offer exactly these values, and the firmware snaps anything else to
+// the nearest one -- so these are dropdowns, and a slider would be wrong.
+const RANGES = [
+  {k:'accel_range_g',   n:'accel', u:'g',     opts:[2, 4, 8, 16]},
+  {k:'gyro_range_dps',  n:'gyro',  u:'dps',   opts:[125, 250, 500, 1000, 2000]},
+  {k:'mag_range_gauss', n:'mag',   u:'gauss', opts:[4, 8, 12, 16]},
+];
+
 const C = {
   x:'#d95926', y:'#199e70', z:'#3987e5',
   est:'#d95926', gps:'#3987e5', baro:'#199e70',
@@ -408,6 +510,14 @@ let paused = false;
 let windowSec = 30;
 let knobsReady = false;      // sliders seeded from the device once
 let dragging = null;
+// Spectrum panel. `spec` is the last frame the device sent; `specHold` is the
+// running per-bin maximum since it was last cleared, which is what survives a
+// ringdown long enough to read a frequency off it.
+let spec = null;
+let specHold = null;
+let specOn = false;
+let specFloorHz = 5;
+let specLog = true;
 // One crosshair instant, shared by every time-series chart: hovering the accel
 // trace marks the same moment on gyro, mag, position and velocity, which is how
 // a glitch on one channel gets matched against the others.
@@ -440,7 +550,11 @@ function connect(){
     let frame;
     try { frame = JSON.parse(ev.data); }
     catch (e) { return; }        // a truncated frame is not worth a console error
-    ingest(frame);
+    // Spectra arrive on the same socket but are their own message: four times
+    // the size of a telemetry frame and a quarter of the rate, so they are not
+    // folded into one. "type" is the only field that separates them.
+    if (frame.type === 'spec') ingestSpectrum(frame);
+    else ingest(frame);
   };
 }
 
@@ -452,6 +566,8 @@ function send(obj){
 function ingest(f){
   latest = f;
   if (!knobsReady && f.params) { seedKnobs(f.params); knobsReady = true; }
+  if (f.params) { syncRanges(f.params); applyPanelVisibility(f.params); }
+  if (f.spec) applySpectrumState(f.spec);
   updateChips(f);
 
   if (paused) return;
@@ -468,6 +584,51 @@ function ingest(f){
   while (history.length && history[0].t < cutoff) history.shift();
 }
 
+// Folds one spectrum into the live trace and the peak hold.
+//
+// The hold is accumulated here rather than in the draw so that it sees every
+// frame that arrived, including ones a busy browser never painted -- the whole
+// point of it is to catch a peak that was only present for one frame.
+function ingestSpectrum(f){
+  // Validated down to the axes, because everything below indexes them without
+  // looking again, and render() is not inside the socket's try/catch.
+  if (!Array.isArray(f.bins) || f.bins.length !== 3) return;
+  if (!f.bins.every(axis => Array.isArray(axis) && axis.length === f.bins[0].length)) return;
+  if (paused) return;
+  // Amplitudes are in the source's own units, so a hold carried over from the
+  // other sensor would not be stale, it would be meaningless.
+  if (spec && spec.src !== f.src) specHold = null;
+  spec = f;
+
+  if (!specHold || specHold[0].length !== f.bins[0].length){
+    specHold = f.bins.map(axis => axis.slice());
+    return;
+  }
+  for (let a = 0; a < 3; a++){
+    const hold = specHold[a], live = f.bins[a];
+    for (let i = 0; i < live.length; i++) if (live[i] > hold[i]) hold[i] = live[i];
+  }
+}
+
+// Shows the panel in whatever state the device is actually in.
+//
+// Driven from the frame rather than from the checkbox for the same reason the
+// range dropdowns are: a second browser, or a reboot, can move this, and a
+// checkbox that disagrees with the firmware is worse than no checkbox.
+function applySpectrumState(s){
+  specOn = !!s.on;
+  // Written only on a difference, for the reason syncRanges() is: this runs 20
+  // times a second and must not fight a control the user is mid-click on.
+  if ($('k-spec').checked !== specOn) $('k-spec').checked = specOn;
+  $('spec-body').hidden = !specOn;
+  $('h-spec').textContent = specOn ? '1.28 s window · ' + s.src : 'off';
+  const source = $('sel-spec-src');
+  if (source.value !== s.src) source.value = s.src;
+  // Nothing is being computed, so holding the last picture of it would invite
+  // reading a frequency off a board that stopped measuring minutes ago.
+  if (!specOn){ spec = null; specHold = null; }
+}
+
 function setChip(id, text, cls){
   const el = $(id);
   el.textContent = text;
@@ -479,9 +640,13 @@ function updateChips(f){
   setChip('c-status', f.status, statusClass);
   setChip('c-imu', f.health.imu ? 'imu ok' : 'imu LOST', f.health.imu ? 'ok' : 'err');
   setChip('c-mag', f.health.mag ? 'mag ok' : 'mag LOST', f.health.mag ? 'ok' : 'warn');
-  const gpsText = !f.health.gps ? 'gps absent'
+  const auxOn = !!f.health.aux;
+  const gpsText = !auxOn ? 'gps off'
+                : !f.health.gps ? 'gps absent'
                 : f.gps.fix ? 'gps fix ' + f.gps.sat : 'gps searching';
-  setChip('c-gps', gpsText, !f.health.gps ? 'warn' : f.gps.fix ? 'ok' : 'warn');
+  setChip('c-gps', gpsText, !auxOn ? '' : !f.health.gps ? 'warn' : f.gps.fix ? 'ok' : 'warn');
+  $('r-aux').textContent = auxOn ? 'on' : 'off';
+  $('btn-aux').textContent = auxOn ? 'Power down GPS + baro' : 'Power up GPS + baro';
   setChip('c-rate', f.hz.toFixed(0) + ' Hz', f.hz > 150 ? 'ok' : 'warn');
 }
 
@@ -672,6 +837,192 @@ function drawSeries(canvas, series, band, label, minSpan, gpsIndex){
   }
 
   geom[canvas.id] = {from, padl:pad.l, padr:pad.r, w, series, band, label, gpsIndex};
+}
+
+// ── Spectrum chart ─────────────────────────────────────────────────────────
+// Frequency across, amplitude up, the three axes overlaid with their peak hold
+// dashed behind them.
+//
+// Bin 0 is never drawn. The transform removes the window's mean, so that bin
+// holds nothing but the rounding of the subtraction -- plotted, it is a spike
+// at 0 Hz that autoscales everything worth seeing into the floor.
+
+// Units follow the source, which is why switching source throws the hold away.
+const SPEC_UNITS = {accel:'m/s²', gyro:'rad/s'};
+
+// Compact over four decades. Amplitudes here run from ~0.001 to ~10, and
+// toFixed at either end is unreadable or a lie.
+function fmtAmp(v){
+  if (v === 0) return '0';
+  const mag = Math.abs(v);
+  if (mag >= 100) return v.toFixed(0);
+  if (mag >= 1) return v.toFixed(1);
+  if (mag >= 0.01) return v.toFixed(3);
+  return v.toExponential(0);
+}
+
+// Largest bin at or above the floor, across all three axes. Returns the bin
+// index and its value, or bin -1 when there is nothing above the floor.
+//
+// The floor exists because hand-holding the board writes 1-3 Hz of motion into
+// the accelerometer that is larger than any structural mode, and a "dominant
+// frequency" readout that always says 1.6 Hz is worse than none.
+function dominantBin(set, df){
+  const first = Math.max(1, Math.ceil(specFloorHz / df));
+  let bin = -1, value = 0;
+  for (const axis of set){
+    for (let i = first; i < axis.length; i++){
+      if (axis[i] > value){ value = axis[i]; bin = i; }
+    }
+  }
+  return {bin, value};
+}
+
+function drawSpectrum(){
+  const canvas = $('cv-spec');
+  const {ctx, w, h} = prepare(canvas);
+  const pad = {l:48, r:11, t:8, b:18};
+
+  ctx.fillStyle = C.surface;
+  ctx.fillRect(0, 0, w, h);
+
+  if (!spec || !spec.fs || !spec.n){
+    ctx.fillStyle = C.faint;
+    ctx.font = '11px ' + MONO;
+    ctx.fillText('filling the 1.28 s window…', pad.l, h/2);
+    return;
+  }
+
+  const count = spec.bins[0].length;
+  const df = spec.fs / spec.n;             // bin width, Hz
+  const fMax = df * (count - 1);           // the Nyquist bin
+
+  // One scale for the live trace and the hold together, so the hold can never
+  // draw outside the plot and the two stay directly comparable.
+  let hi = 0;
+  for (const set of [spec.bins, specHold]){
+    if (!set) continue;
+    for (const axis of set){
+      for (let i = 1; i < count; i++) if (axis[i] > hi) hi = axis[i];
+    }
+  }
+  if (!(hi > 0)) hi = 1;
+
+  const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+  const X = f => pad.l + (f / fMax) * plotW;
+  // Three decades below the peak in log mode: enough to show a mode 60 dB down
+  // without handing most of the panel to the noise floor.
+  const DECADES = 3;
+  const topLog = Math.log10(hi);
+  const Y = v => {
+    if (!specLog) return pad.t + (1 - v / hi) * plotH;
+    const frac = (Math.log10(Math.max(v, 1e-12)) - (topLog - DECADES)) / DECADES;
+    return pad.t + (1 - Math.min(1, Math.max(0, frac))) * plotH;
+  };
+
+  ctx.strokeStyle = C.grid;
+  ctx.fillStyle = C.faint;
+  ctx.lineWidth = 1;
+  ctx.font = '10px ' + MONO;
+
+  const fStep = niceStep(fMax);
+  ctx.textAlign = 'center';
+  for (let f = fStep; f <= fMax + 1e-6; f += fStep){
+    const x = X(f);
+    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + plotH); ctx.stroke();
+    ctx.fillText(f.toFixed(0), x, h - 4);
+  }
+
+  ctx.textAlign = 'right';
+  if (specLog){
+    for (let d = 0; d <= DECADES; d++){
+      const v = Math.pow(10, topLog - d), y = Y(v);
+      ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+      ctx.fillText(fmtAmp(v), pad.l - 5, y + 3);
+    }
+  } else {
+    const step = niceStep(hi);
+    for (let v = 0; v <= hi + 1e-12; v += step){
+      const y = Y(v);
+      ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+      ctx.fillText(fmtAmp(v), pad.l - 5, y + 3);
+    }
+  }
+  ctx.textAlign = 'left';
+
+  const colors = [C.x, C.y, C.z];
+  const trace = (set, held) => {
+    ctx.lineJoin = 'round';
+    ctx.setLineDash(held ? [3, 3] : []);
+    ctx.lineWidth = held ? 1 : 1.6;
+    for (let a = 0; a < 3; a++){
+      ctx.strokeStyle = held ? rgba(colors[a], 0.5) : colors[a];
+      ctx.beginPath();
+      for (let i = 1; i < count; i++){
+        const x = X(i * df), y = Y(set[a][i]);
+        i === 1 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  };
+  if (specHold) trace(specHold, true);
+  trace(spec.bins, false);
+
+  // A marker on the held peak: the one frequency the panel exists to report,
+  // and the hold is where it survives once the ring has died away.
+  const peak = dominantBin(specHold || spec.bins, df);
+  if (peak.bin > 0){
+    const x = X(peak.bin * df), y = Y(peak.value);
+    ctx.strokeStyle = rgba(C.ink, 0.3);
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, pad.t + plotH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = C.dim;
+    ctx.textAlign = 'center';
+    ctx.fillText((peak.bin * df).toFixed(1) + ' Hz', x, Math.max(pad.t + 9, y - 5));
+    ctx.textAlign = 'left';
+  }
+
+  // Over a patch of surface, for the same reason drawSeries does it: the label
+  // is otherwise illegible wherever a trace runs under it.
+  const label = SPEC_UNITS[spec.src] || '';
+  ctx.font = '10px ' + MONO;
+  const tw = ctx.measureText(label).width;
+  const lx = w - pad.r - tw - 2;
+  ctx.fillStyle = C.surface;
+  ctx.fillRect(lx - 4, pad.t - 1, tw + 8, 13);
+  ctx.fillStyle = C.dim;
+  ctx.fillText(label, lx, pad.t + 9);
+}
+
+// The chart plus the readouts under it.
+//
+// "dominant" is read off the peak hold and "live peak" off the current frame,
+// deliberately: after a tap the live trace has already fallen back to the
+// noise floor by the time anyone looks at it, and the pair together show both
+// what rang and whether it is still ringing.
+function drawSpectrumPanel(){
+  drawSpectrum();
+
+  const ids = ['r-spec-f', 'r-spec-a', 'r-spec-live', 'r-spec-res', 'r-spec-fs'];
+  if (!spec || !spec.fs || !spec.n){
+    for (const id of ids) $(id).textContent = '—';
+    return;
+  }
+
+  const df = spec.fs / spec.n;
+  const unit = SPEC_UNITS[spec.src] || '';
+  $('r-spec-res').textContent = df.toFixed(2) + ' Hz';
+  $('r-spec-fs').textContent = spec.fs.toFixed(1) + ' Hz';
+
+  const held = dominantBin(specHold || spec.bins, df);
+  $('r-spec-f').textContent = held.bin > 0 ? (held.bin * df).toFixed(1) + ' Hz' : '—';
+  $('r-spec-a').textContent = held.bin > 0 ? fmtAmp(held.value) + ' ' + unit : '—';
+
+  const live = dominantBin(spec.bins, df);
+  $('r-spec-live').textContent = live.bin > 0 ? (live.bin * df).toFixed(1) + ' Hz' : '—';
 }
 
 // The record nearest a crosshair instant. Linear over a few hundred points,
@@ -869,7 +1220,9 @@ function drawPosition3d(){
   $('r-pu').textContent   = p[2].toFixed(2) + ' ±' + s3[2].toFixed(2);
   $('r-sat').textContent  = g.sat;
   $('r-hdop').textContent = g.fix ? g.hdop.toFixed(1) : '—';
+  $('r-gsig').textContent = g.n ? '±' + g.sig.toFixed(1) + ' m' : '—';
   $('r-nfix').textContent = g.n;
+  $('r-grej').textContent = g.rej;
 }
 
 // ── Controls ───────────────────────────────────────────────────────────────
@@ -894,6 +1247,58 @@ function buildKnobs(){
   }
 }
 
+// Hides the panels whose source has been switched off.
+//
+// Not cosmetic. With GPS off the filter still propagates position and velocity
+// from inertial dead reckoning, so those traces keep moving and keep drawing a
+// 3-sigma band -- they look like a working estimate right up until they have
+// drifted kilometres away. A panel with no measurement behind it is worse than
+// no panel. The barometer is the same case: with fusion off its own height
+// trace is still plotted against a fused height it is no longer part of.
+function applyPanelVisibility(params){
+  const on = (v) => v === undefined ? true : !!v;
+  const gps = on(params.gps_enabled);
+  const baro = on(params.baro_enabled);
+  for (const id of ['sec-pos3d', 'sec-pos', 'sec-vel']) {
+    const el = $(id);
+    if (el) el.hidden = !gps;
+  }
+  const baroPanel = $('sec-baro');
+  if (baroPanel) baroPanel.hidden = !baro;
+
+  // GPS velocity is a refinement of GPS fusion, so it cannot mean anything on
+  // its own. Disabled rather than hidden, so the setting stays visible.
+  const vel = $('k-gvel');
+  if (vel) vel.disabled = !gps;
+}
+
+function buildRanges(){
+  const host = $('ranges');
+  for (const rg of RANGES){
+    const label = document.createElement('label');
+    label.className = 'range';
+    label.innerHTML = '<span>' + rg.n + '</span><select id="r-' + rg.k + '">' +
+      rg.opts.map(v => '<option value="' + v + '">\u00b1' + v + ' ' + rg.u + '</option>').join('') +
+      '</select>';
+    host.appendChild(label);
+    label.querySelector('select').addEventListener('change', e =>
+      send({cmd:'params', [rg.k]: +e.target.value}));
+  }
+}
+
+// Ranges are re-synced on every frame rather than seeded once, because the
+// firmware snaps a request to a value the chip actually has: the dropdown must
+// show what the hardware ended up on, not what was asked for. Writing only on a
+// difference leaves an open dropdown undisturbed.
+function syncRanges(params){
+  for (const rg of RANGES){
+    const value = params[rg.k];
+    if (value === undefined) continue;
+    const sel = $('r-' + rg.k);
+    if (sel && sel.value !== String(value)) sel.value = String(value);
+  }
+}
+
 // Seeds the sliders from the device's own values on first connect, so the UI
 // always reflects what the filter is actually running.
 function seedKnobs(params){
@@ -903,6 +1308,8 @@ function seedKnobs(params){
     $('s-' + kn.k).value = toSlider(value, kn);
     $('v-' + kn.k).textContent = value.toFixed(kn.d) + ' ' + kn.u;
   }
+  syncRanges(params);
+  $('k-gps').checked = !!params.gps_enabled;
   $('k-zupt').checked = !!params.zupt_enabled;
   $('k-gvel').checked = !!params.gps_vel_enabled;
   $('k-baro').checked = !!params.baro_enabled;
@@ -911,10 +1318,18 @@ function seedKnobs(params){
 function bindControls(){
   $('k-zupt').addEventListener('change', e =>
     send({cmd:'params', zupt_enabled: e.target.checked ? 1 : 0}));
+  $('k-gps').addEventListener('change', e => {
+    send({cmd:'params', gps_enabled: e.target.checked ? 1 : 0});
+    // Act immediately rather than waiting for the echo, so the panels go at
+    // the moment of the click.
+    applyPanelVisibility({gps_enabled: e.target.checked, baro_enabled: $('k-baro').checked});
+  });
   $('k-gvel').addEventListener('change', e =>
     send({cmd:'params', gps_vel_enabled: e.target.checked ? 1 : 0}));
-  $('k-baro').addEventListener('change', e =>
-    send({cmd:'params', baro_enabled: e.target.checked ? 1 : 0}));
+  $('k-baro').addEventListener('change', e => {
+    send({cmd:'params', baro_enabled: e.target.checked ? 1 : 0});
+    applyPanelVisibility({gps_enabled: $('k-gps').checked, baro_enabled: e.target.checked});
+  });
 
   $('btn-reset').addEventListener('click', () => {
     send({cmd:'reset'});
@@ -937,7 +1352,30 @@ function bindControls(){
     const busy = latest && latest.magcal && latest.magcal.busy;
     send({cmd:'magcal', action: busy ? 'finish' : 'start'});
   });
+  $('btn-aux').addEventListener('click', () => {
+    const on = latest && latest.health && latest.health.aux;
+    send({cmd:'auxpower', state: on ? 'off' : 'on'});
+  });
   $('btn-magclear').addEventListener('click', () => send({cmd:'magcal', action:'clear'}));
+
+  // Spectrum panel. The source rides along with the enable so that switching
+  // it on always agrees with the dropdown, however the two were last left.
+  $('k-spec').addEventListener('change', e => {
+    send({cmd:'spectrum', enabled: e.target.checked ? 1 : 0, source: $('sel-spec-src').value});
+    // Act immediately rather than waiting for the echo, like the GPS toggle.
+    specOn = e.target.checked;
+    $('spec-body').hidden = !specOn;
+    if (!specOn){ spec = null; specHold = null; }
+  });
+  $('sel-spec-src').addEventListener('change', e => {
+    specHold = null;               // the hold is in the old sensor's units
+    send({cmd:'spectrum', source: e.target.value});
+  });
+  $('sel-spec-floor').addEventListener('change', e => { specFloorHz = +e.target.value; });
+  $('k-spec-log').addEventListener('change', e => { specLog = e.target.checked; });
+  $('btn-spec-clear').addEventListener('click', () => {
+    specHold = spec ? spec.bins.map(axis => axis.slice()) : null;
+  });
 
   // Hover layer on the time-series charts. The charts share one time axis, so
   // the crosshair is global and every chart redraws it at the same instant.
@@ -1085,6 +1523,10 @@ function render(){
     $('r-vu').textContent = nav.v[2].toFixed(2) + ' ±' + nav.v3s[2].toFixed(2);
     $('r-ba').textContent = nav.ba.map(v => v.toFixed(3)).join(' ');
 
+    // Only when the panel is showing: a hidden canvas has no width, so
+    // prepare() would size it to zero and every draw would be wasted.
+    if (specOn) drawSpectrumPanel();
+
     const baro = latest.baro;
     $('r-bpa').textContent = baro.ok ? (baro.pa / 100).toFixed(2) + ' hPa' : 'absent';
     $('r-btc').textContent = baro.ok ? baro.tc.toFixed(1) + ' °C' : '—';
@@ -1096,6 +1538,7 @@ function render(){
 }
 
 buildKnobs();
+buildRanges();
 bindControls();
 connect();
 requestAnimationFrame(render);

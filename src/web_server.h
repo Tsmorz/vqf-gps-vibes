@@ -22,4 +22,9 @@ void WebServerLoop();
 void WebServerBroadcast(const EstimatorSnapshot& snapshot, const FilterParams& params,
                         const char* status_name);
 
+// Sends the latest spectrum, if the analyser has produced one since the last
+// call. Needs no rate limit of its own: VibrationService() decides when a
+// transform happens, and each result is handed over exactly once.
+void WebServerBroadcastSpectrum();
+
 size_t WebServerClientCount();

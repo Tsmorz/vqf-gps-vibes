@@ -10,6 +10,7 @@
 #include "generated/web_index.h"
 #include "imu.h"
 #include "telemetry.h"
+#include "vibration.h"
 #include "wifi_link.h"
 
 namespace {
@@ -117,7 +118,26 @@ void HandleParamsCommand(const char* json) {
     update_positive("sigma_baro_bias", params.sigma_baro_bias, 0.00001f, 1.0f);
     update_positive("tau_acc", params.tau_acc, 0.1f, 60.0f);
     update_positive("tau_mag", params.tau_mag, 0.1f, 120.0f);
+    // Ranges are integers chosen from a fixed set, so they are only bounded
+    // here -- ImuSetRanges() snaps them to a value the chip actually has, and
+    // the estimator publishes the snapped result back. Doing the snapping
+    // there rather than here keeps the list of supported ranges in one place,
+    // next to the enum mapping that has to agree with it.
+    auto update_range = [&](const char* key, int& field, int minimum, int maximum) {
+        float value = 0.0f;
+        if (!ExtractNumber(json, key, value)) {
+            return;
+        }
+        field = static_cast<int>(
+            constrain(value, static_cast<float>(minimum), static_cast<float>(maximum)));
+    };
+
+    update_range("accel_range_g", params.accel_range_g, 2, 16);
+    update_range("gyro_range_dps", params.gyro_range_dps, 125, 2000);
+    update_range("mag_range_gauss", params.mag_range_gauss, 4, 16);
+
     ExtractFlag(json, "zupt_enabled", params.zupt_enabled);
+    ExtractFlag(json, "gps_enabled", params.gps_enabled);
     ExtractFlag(json, "gps_vel_enabled", params.gps_vel_enabled);
     ExtractFlag(json, "baro_enabled", params.baro_enabled);
 
@@ -134,6 +154,29 @@ void HandleMagCalCommand(const char* json) {
     } else if (HasStringValue(json, "action", "clear")) {
         ImuMagCalClear();
     }
+}
+
+// Cuts or restores the GPS and barometer's rail. See EstimatorSetAuxPower().
+void HandleAuxPowerCommand(const char* json) {
+    if (HasStringValue(json, "state", "off")) {
+        EstimatorSetAuxPower(false);
+    } else if (HasStringValue(json, "state", "on")) {
+        EstimatorSetAuxPower(true);
+    }
+}
+
+// Switches the spectral analyser on or off and picks which sensor it looks at.
+// Both fields are optional, so the source dropdown can send only the source.
+void HandleSpectrumCommand(const char* json) {
+    if (HasStringValue(json, "source", "gyro")) {
+        VibrationSetSource(SpectrumSource::kGyro);
+    } else if (HasStringValue(json, "source", "accel")) {
+        VibrationSetSource(SpectrumSource::kAccel);
+    }
+
+    bool wanted = VibrationGetConfig().enabled;
+    ExtractFlag(json, "enabled", wanted);
+    VibrationSetEnabled(wanted);
 }
 
 void OnSocketEvent(uint8_t client, WStype_t type, uint8_t* payload, size_t length) {
@@ -166,6 +209,10 @@ void OnSocketEvent(uint8_t client, WStype_t type, uint8_t* payload, size_t lengt
         EstimatorResetFilter();
     } else if (HasStringValue(message, "cmd", "magcal")) {
         HandleMagCalCommand(message);
+    } else if (HasStringValue(message, "cmd", "auxpower")) {
+        HandleAuxPowerCommand(message);
+    } else if (HasStringValue(message, "cmd", "spectrum")) {
+        HandleSpectrumCommand(message);
     }
 }
 
@@ -214,7 +261,25 @@ void WebServerBroadcast(const EstimatorSnapshot& snapshot, const FilterParams& p
     last_send_ms = now;
 
     static char frame[kTelemetryBufferSize];
-    const size_t length = BuildTelemetryFrame(frame, sizeof(frame), snapshot, params, status_name);
+    const size_t length = BuildTelemetryFrame(frame, sizeof(frame), snapshot, params, status_name,
+                                              VibrationGetConfig());
+    if (length > 0) {
+        socket_server.broadcastTXT(frame, length);
+    }
+}
+
+void WebServerBroadcastSpectrum() {
+    if (connected_clients == 0) {
+        return;
+    }
+    // Both static: 6.5 kB between them, against the loop task's 8 kB stack.
+    static SpectrumSnapshot spectrum;
+    static char frame[kSpectrumBufferSize];
+
+    if (!VibrationTakeSpectrum(spectrum)) {
+        return;
+    }
+    const size_t length = BuildSpectrumFrame(frame, sizeof(frame), spectrum);
     if (length > 0) {
         socket_server.broadcastTXT(frame, length);
     }

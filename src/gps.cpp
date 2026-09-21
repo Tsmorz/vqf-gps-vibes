@@ -32,8 +32,10 @@ void ConfigureOutput() {
 }
 
 // Copies the library's parsed fields into our own struct. Called only after a
-// sentence has parsed and reported a valid fix.
-void CaptureFix() {
+// sentence has parsed and reported a valid fix. `arrived_ms` is when the
+// sentence was seen to be complete, which is earlier -- and truer -- than when
+// parsing it finished.
+void CaptureFix(uint32_t arrived_ms) {
     latest.has_fix = true;
     latest.lat_deg = gps.latitudeDegrees;
     latest.lon_deg = gps.longitudeDegrees;
@@ -42,7 +44,13 @@ void CaptureFix() {
     latest.course_deg = gps.angle;
     latest.satellites = gps.satellites;
     latest.hdop = gps.HDOP;
-    latest.fix_millis = millis();
+    latest.fix_millis = arrived_ms;
+    // The library leaves these at zero until a sentence has carried a time, so
+    // an all-zero reading is "not known yet" rather than midnight.
+    latest.epoch_tod_ms = (static_cast<uint32_t>(gps.hour) * 3600000u) +
+                          (static_cast<uint32_t>(gps.minute) * 60000u) +
+                          (static_cast<uint32_t>(gps.seconds) * 1000u) + gps.milliseconds;
+    latest.epoch_valid = latest.epoch_tod_ms != 0;
     fix_unconsumed = true;
     I2cNoteTransferOk(I2cBus::kAux);
 }
@@ -135,13 +143,17 @@ void GpsPoll() {
         if (!gps.newNMEAreceived()) {
             continue;
         }
+        // Stamp the arrival here, not after parsing. Parsing is our own work
+        // done on data that has already landed, and charging it to the fix
+        // would report the receiver as later than it was.
+        const uint32_t arrived_ms = millis();
         // parse() returns false for a checksum error or a sentence the library
         // does not handle -- both are routine, so just take the next one.
         if (!gps.parse(gps.lastNMEA())) {
             continue;
         }
         if (gps.fix) {
-            CaptureFix();
+            CaptureFix(arrived_ms);
         } else {
             latest.has_fix = false;
             latest.satellites = gps.satellites;

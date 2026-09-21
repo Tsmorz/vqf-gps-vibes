@@ -38,6 +38,28 @@ void ImuBegin();
 // be called every tick whatever the hardware is doing.
 bool ImuRead(ImuSample& out);
 
+// ── Full-scale ranges ────────────────────────────────────────────────────────
+// Boot defaults come from IMU_ACCEL_RANGE_G / IMU_GYRO_RANGE_DPS /
+// IMU_MAG_RANGE_GAUSS in config.h; the dashboard can change them at runtime.
+
+// Applies new ranges, snapping each to the nearest value its chip supports.
+// Issues I2C -- call only from the estimator task, which owns the bus.
+//
+// The requested ranges are remembered even while a chip is offline, so a
+// sensor that reconnects comes back on the range the user selected rather
+// than reverting to the compile-time default.
+//
+// Returns true if the accelerometer range changed, which invalidates the
+// navigation filter's learned accelerometer bias: the part's offset and scale
+// error are specific to the range it was measured on, so the old bias is no
+// longer describing the same signal path. The caller is responsible for
+// forgetting it -- see ApplyImuRanges() in estimator.cpp.
+bool ImuSetRanges(int accel_g, int gyro_dps, int mag_gauss);
+
+// The ranges actually in force, after snapping. The estimator publishes these
+// so the dashboard's dropdowns show what the hardware is really running.
+void ImuGetRanges(int& accel_g, int& gyro_dps, int& mag_gauss);
+
 bool ImuAccelGyroHealthy();
 bool ImuMagHealthy();
 

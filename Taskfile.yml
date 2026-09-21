@@ -94,8 +94,12 @@ tasks:
       # The frame comes from the firmware's own encoder, so this checks the
       # firmware and the dashboard still agree on the schema.
       - mkdir -p .pio/uicheck
-      - pio test -e native -f test_telemetry -vv | grep -m1 '^FRAME:' | sed 's/^FRAME://' > .pio/uicheck/frame.json
-      - node tools/check_dashboard.mjs .pio/uicheck/frame.json
+      # One run, both message types: the telemetry frame and the spectrum
+      # frame are two halves of the same contract and must not drift apart.
+      - pio test -e native -f test_telemetry -vv > .pio/uicheck/encoder.log
+      - grep -m1 '^FRAME:' .pio/uicheck/encoder.log | sed 's/^FRAME://' > .pio/uicheck/frame.json
+      - grep -m1 '^SPECTRUM:' .pio/uicheck/encoder.log | sed 's/^SPECTRUM://' > .pio/uicheck/spectrum.json
+      - node tools/check_dashboard.mjs .pio/uicheck/frame.json .pio/uicheck/spectrum.json
 
   lint:
     desc: "Static analysis (cppcheck) -- fails on HIGH or MEDIUM findings"

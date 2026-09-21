@@ -65,6 +65,70 @@
 #define BMP390_ADDR_PRIMARY 0x77
 #define BMP390_ADDR_ALT 0x76
 
+// ── IMU full-scale ranges ────────────────────────────────────────────────────
+// Boot defaults. All three are also dashboard controls: the estimator task
+// re-applies them over I2C when they change, since it owns the bus.
+//
+// They live here rather than in imu.cpp so that sensor_limits.h can derive its
+// saturation thresholds from the same numbers. Those thresholds used to be a
+// second, hand-maintained copy of the ranges, which is the kind of duplication
+// that goes stale in silence: raising a range in imu.cpp alone would leave
+// every reading past the *old* limit discarded as corrupt, and the rejection
+// looks exactly like a failing sensor.
+//
+// Only values the chips support are accepted -- anything else is snapped to
+// the nearest one and logged. See ImuSetRanges() in imu.cpp.
+//
+//   accel   2, 4, 8, 16 g
+//   gyro    125, 250, 500, 1000, 2000 dps
+//   mag     4, 8, 12, 16 gauss
+//
+// Wider is not free: full scale sets the quantisation step, so 16 g resolves
+// four times as coarsely as 4 g and raises the noise floor the Allan-deviation
+// figures below were measured at. Widen a range because the signal clips, not
+// pre-emptively. Clipping is visible on the dashboard as rejected samples --
+// sensor_limits.h refuses a saturated reading rather than integrating a number
+// that only means "at least full scale".
+#ifndef IMU_ACCEL_RANGE_G
+#define IMU_ACCEL_RANGE_G 4
+#endif
+#ifndef IMU_GYRO_RANGE_DPS
+#define IMU_GYRO_RANGE_DPS 1000
+#endif
+#ifndef IMU_MAG_RANGE_GAUSS
+#define IMU_MAG_RANGE_GAUSS 4
+#endif
+
+// Accelerometer/gyroscope output data rate (Hz).
+//
+// 208 Hz against the 200 Hz estimator tick, where this used to run at 833 Hz.
+// The point is anti-aliasing. The LSM6DSOX's internal filters are referenced
+// to its ODR, so at 833 Hz the part passed content up to ~400 Hz and we then
+// sampled it at 200 Hz with no decimation in between -- everything above
+// 100 Hz folded straight into the filter's passband, and because rectified
+// vibration has a DC component, VQF's bias estimator absorbs it as real gyro
+// bias. At 208 Hz the sensor band-limits to ~104 Hz itself, which is the
+// anti-alias filter the polled read path never had.
+//
+// What it costs, both worth knowing before changing this back:
+//
+//   - Freshness. A sample can now be up to 4.8 ms old at the moment it is
+//     read, against 1.2 ms at 833 Hz. That is still inside one tick.
+//   - Beat. 208 Hz nominal against a 200 Hz poll means the receiver runs
+//     slightly ahead and ~8 samples a second are skipped, which is harmless.
+//     But the part's internal oscillator has a few percent of tolerance, and
+//     if the true rate falls below 200 Hz some polls re-read the sample they
+//     already had -- integrating one rate across two ticks. That is a
+//     zero-order hold, not corruption, and it is the same thing the
+//     magnetometer already does at 155 Hz.
+//
+// Both go away if the FIFO is ever used instead of polled reads, which is the
+// configuration this rate was chosen to suit. Supported here: 26, 52, 104,
+// 208, 416, 833, 1666.
+#ifndef IMU_ACCEL_GYRO_ODR_HZ
+#define IMU_ACCEL_GYRO_ODR_HZ 208
+#endif
+
 // ── Power rails ──────────────────────────────────────────────────────────────
 // LDO1 is always on and feeds the ESP32-S3 and the IMU. LDO2 is switchable,
 // gated by GPIO 39, and feeds the 3V3 pin -- here the GPS and the barometer.
@@ -129,6 +193,16 @@
 // browser cannot usefully render 200 Hz, and each frame costs a JSON encode.
 #ifndef TELEMETRY_INTERVAL_MS
 #define TELEMETRY_INTERVAL_MS 50
+#endif
+
+// How often the dashboard's spectrum panel gets a new transform, while it is
+// switched on. The window behind it is 1.28 s (spectrum::kSamples), so at
+// 250 ms consecutive spectra overlap by 80%: fast enough that a ringdown is
+// caught by several of them on the way down, slow enough that three 256-point
+// transforms and a ~4 kB frame stay a rounding error on core 0 and on the
+// link. Nothing runs at all while the panel is off.
+#ifndef SPECTRUM_INTERVAL_MS
+#define SPECTRUM_INTERVAL_MS 250
 #endif
 
 // An IMU sample older than this means the estimator task has stalled or the
@@ -265,6 +339,62 @@
 #endif
 #ifndef DEFAULT_SIGMA_GPS_VEL
 #define DEFAULT_SIGMA_GPS_VEL 0.5f
+#endif
+
+// ── How the reported fix quality scales those sigmas ─────────────────────────
+// The three sigmas above are what a *good* fix is worth; gps_quality.h widens
+// them for a fix the receiver has described as worse. See that header for why
+// satellite count and HDOP are both needed and why neither can ever narrow a
+// sigma below the measured value.
+
+// Fewer satellites than this and there is no 3D solution at all -- the
+// receiver is reporting an assumed altitude, which must not enter the filter
+// as a height measurement. Four is the arithmetic minimum; it is accepted, but
+// GpsSatelliteFactor() doubles its sigma because it has no redundancy left.
+#ifndef GPS_MIN_SATELLITES
+#define GPS_MIN_SATELLITES 4
+#endif
+
+// The HDOP that DEFAULT_SIGMA_GPS_POS_H was measured at, and so the best
+// geometry that is allowed to count. Reported values below it are treated as
+// this -- see the note on multipath in gps_quality.h.
+#ifndef GPS_HDOP_FLOOR
+#define GPS_HDOP_FLOOR 1.0f
+#endif
+
+// Above this the fix is discarded rather than merely distrusted. Doubles as
+// the guard against the 99.99 that receivers emit for "no value".
+#ifndef GPS_MAX_HDOP
+#define GPS_MAX_HDOP 20.0f
+#endif
+
+// Stands in for HDOP when the receiver does not report it. Pessimistic on
+// purpose: a missing field is unknown geometry, not good geometry.
+#ifndef GPS_UNKNOWN_HDOP
+#define GPS_UNKNOWN_HDOP 2.0f
+#endif
+
+// ── The check the receiver cannot make for itself ────────────────────────────
+// Reported quality describes the geometry, not the ranging. A multipath fix
+// arrives with nine satellites and an excellent HDOP because the receiver is
+// tracking a reflection perfectly well -- only the filter's own prediction can
+// contradict it. NavFilter::GpsPositionNis() scores that disagreement.
+
+// Normalised innovation squared beyond which a fix is treated as bad rather
+// than surprising. Chi-square with two degrees of freedom: 13.8 is the 99.9th
+// percentile, so roughly one good fix in a thousand is refused.
+#ifndef GPS_MAX_POSITION_NIS
+#define GPS_MAX_POSITION_NIS 13.8f
+#endif
+
+// After this many fixes in a row have been refused, the filter -- not the
+// receiver -- is assumed to be the one that is wrong, and the next fix is
+// snapped to instead of rejected. Without this a filter that became
+// overconfident while GPS was absent would reject every fix forever, which is
+// the classic way an innovation gate turns a recoverable error permanent. At
+// one fix per second this is a few seconds of disagreement before re-anchoring.
+#ifndef GPS_MAX_CONSECUTIVE_REJECTS
+#define GPS_MAX_CONSECUTIVE_REJECTS 5
 #endif
 
 // Pseudo-measurement noise for the zero-velocity update (m/s). Applied when

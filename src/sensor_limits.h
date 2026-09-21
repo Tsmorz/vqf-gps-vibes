@@ -1,7 +1,7 @@
 #pragma once
 
 // Plausibility limits for the IMU, derived from the ranges the chips are
-// configured for in imu.cpp.
+// currently configured for.
 //
 // These exist because the Adafruit driver cannot report a failed transfer:
 // Adafruit_LSM6DS::getEvent() ends in an unconditional `return true;` and the
@@ -18,12 +18,37 @@
 
 #include <math.h>
 
+#include "config.h"
+
 namespace sensor_limits {
 
-// Full scale of the ranges selected in imu.cpp: +-4 g, +-1000 dps, +-4 gauss.
-constexpr float kAccelFullScaleMps2 = 4.0f * 9.80665f;
-constexpr float kGyroFullScaleRadS = 1000.0f * 3.14159265f / 180.0f;
-constexpr float kMagFullScaleUt = 400.0f;
+// Full scale of the ranges the chips are running right now.
+//
+// This is a parameter rather than a constant because the ranges are a runtime
+// setting: the dashboard can widen the accelerometer mid-flight and the
+// estimator re-applies it over I2C. A threshold left behind at the old range
+// would reject every genuine reading past it, and a storm of rejected samples
+// is indistinguishable on the dashboard from a failing sensor. Passing the
+// active full scale in is what stops these two drifting apart.
+struct FullScale {
+    float accel_mps2;
+    float gyro_rad_s;
+    float mag_ut;
+};
+
+constexpr float kGravityMps2 = 9.80665f;
+constexpr float kRadiansPerDegree = 3.14159265f / 180.0f;
+constexpr float kMicroteslaPerGauss = 100.0f;
+
+// Converts ranges expressed in the chips' own units into full-scale limits.
+constexpr FullScale FullScaleFor(int accel_g, int gyro_dps, int mag_gauss) {
+    return FullScale{accel_g * kGravityMps2, gyro_dps * kRadiansPerDegree,
+                     mag_gauss * kMicroteslaPerGauss};
+}
+
+// The ranges the firmware boots with, before the dashboard changes anything.
+constexpr FullScale kDefaultFullScale =
+    FullScaleFor(IMU_ACCEL_RANGE_G, IMU_GYRO_RANGE_DPS, IMU_MAG_RANGE_GAUSS);
 
 // An accelerometer in free fall reads zero, but this board is not in free
 // fall: sustained exact zeros mean the transfer failed. The threshold is well
@@ -36,7 +61,9 @@ constexpr float kMinPlausibleAccelMps2 = 0.5f;
 // that the true value is at least full scale, so integrating it is
 // meaningless whether it came from genuine clipping or from a corrupt
 // transfer. Rejecting a few samples during a hard knock costs nothing -- the
-// filter coasts through them.
+// filter coasts through them. Persistent rejections mean the range is too
+// narrow for the platform, which is what the dashboard's range controls and
+// the IMU_*_RANGE_* defaults in config.h are for.
 constexpr float kSaturationFraction = 0.99f;
 
 // True if every axis is finite and comfortably inside `limit`.
@@ -55,17 +82,16 @@ inline float Magnitude(const float value[3]) {
 }
 
 // True if this accelerometer and gyroscope pair could have come from the
-// hardware as configured.
-inline bool AccelGyroLooksValid(const float accel[3], const float gyro[3]) {
-    if (!WithinFullScale(accel, kAccelFullScaleMps2) ||
-        !WithinFullScale(gyro, kGyroFullScaleRadS)) {
+// hardware as configured. `scale` must be the ranges currently on the chip.
+inline bool AccelGyroLooksValid(const float accel[3], const float gyro[3], const FullScale& scale) {
+    if (!WithinFullScale(accel, scale.accel_mps2) || !WithinFullScale(gyro, scale.gyro_rad_s)) {
         return false;
     }
     return Magnitude(accel) >= kMinPlausibleAccelMps2;
 }
 
-inline bool MagLooksValid(const float mag[3]) {
-    return WithinFullScale(mag, kMagFullScaleUt);
+inline bool MagLooksValid(const float mag[3], const FullScale& scale) {
+    return WithinFullScale(mag, scale.mag_ut);
 }
 
 }  // namespace sensor_limits

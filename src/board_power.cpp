@@ -9,7 +9,7 @@ namespace {
 
 // Long enough for the PA1010D to be ready to answer on I2C. The BMP390 needs
 // only a couple of milliseconds; the GPS receiver is what sets this.
-constexpr uint32_t kRailSettleMs = 300;
+constexpr uint32_t kRailSettleMs = kAuxRailSettleMs;
 
 // Long enough for the rail to discharge so the sensors genuinely reset, rather
 // than merely dipping and holding their confused state.
@@ -25,6 +25,10 @@ void BoardPowerBegin() {
     pinMode(LDO2_ENABLE_PIN, OUTPUT);
     digitalWrite(LDO2_ENABLE_PIN, HIGH);
     delay(kRailSettleMs);
+}
+
+void BoardPowerAuxSet(bool on) {
+    digitalWrite(LDO2_ENABLE_PIN, on ? HIGH : LOW);
 }
 
 void BoardPowerCycleAux() {

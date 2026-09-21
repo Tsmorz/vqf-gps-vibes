@@ -4,6 +4,7 @@
 #include <unity.h>
 
 #include "geo.h"
+#include "gps_quality.h"
 #include "nav_filter.h"
 
 namespace {
@@ -431,6 +432,166 @@ void test_divergence_catches_nan_position_and_speed() {
     TEST_ASSERT_TRUE(bad_noise.IsDiverged());
 }
 
+// Snapping to a fix asserts the position, so every correlation the filter had
+// built up against the old one is void. Leaving those cross terms behind next
+// to a much smaller variance makes P indefinite -- not a slow decay but an
+// immediate fault, and one the diagonal-only IsDiverged() cannot see until the
+// damage is done.
+//
+// The path that exposes it is an ordinary moving cold start: VQF never reports
+// rest, so no zero-velocity update bounds the pos/vel correlation, which
+// reaches 0.996 in a minute of free-running.
+void test_snapping_to_a_fix_leaves_a_consistent_covariance() {
+    NavFilter filter;
+    PredictFor(filter, kAccelAtRest, 60.0f);
+
+    const float fix[3] = {0.0f, 0.0f, 0.0f};
+    filter.SetPosition(fix, 5.0f);
+
+    // The same fix's own ground speed, applied immediately afterwards exactly
+    // as ApplyGpsFix does. With a stale cross-covariance this threw position
+    // 30 m off the fix it had just been snapped to and drove its variance
+    // negative -- from one self-consistent measurement.
+    filter.UpdateGpsVelocity(1.0f, 0.0f, 0.5f);
+
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, filter.state(NavFilter::kPosEast));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, filter.state(NavFilter::kPosNorth));
+    TEST_ASSERT_TRUE(filter.variance(NavFilter::kPosEast) > 0.0f);
+    TEST_ASSERT_TRUE(filter.variance(NavFilter::kPosNorth) > 0.0f);
+    TEST_ASSERT_FALSE(filter.IsDiverged());
+}
+
+// ── GPS innovation gate (NavFilter::GpsPositionNis) ──────────────────────────
+
+// A fix where the filter already expects to be is unsurprising by definition.
+void test_a_fix_where_the_filter_expects_one_scores_near_zero() {
+    NavFilter filter;
+    const float fix[3] = {0.0f, 0.0f, 0.0f};
+    TEST_ASSERT_TRUE(filter.GpsPositionNis(fix, 5.0f) < 1.0f);
+}
+
+// The case the reported quality cannot catch: nine satellites, excellent HDOP,
+// ranging off a reflection.
+void test_a_multipath_jump_scores_far_past_the_gate() {
+    NavFilter filter;
+    // Converge first, so the filter has a tight belief to be surprised against.
+    for (int i = 0; i < 30; i++) {
+        const float here[3] = {0.0f, 0.0f, 0.0f};
+        filter.UpdateGpsPosition(here, 5.0f, 6.0f);
+    }
+    const float jumped[3] = {60.0f, 0.0f, 0.0f};
+    TEST_ASSERT_TRUE(filter.GpsPositionNis(jumped, 5.0f) > 13.8f);
+}
+
+// A wide prior has to forgive a distant fix, or the gate would reject exactly
+// the fixes a lost filter needs most.
+void test_an_uncertain_filter_accepts_a_distant_fix() {
+    NavFilter filter;  // reset: position 1-sigma is 10 m
+    PredictFor(filter, kAccelAtRest, 120.0f);
+    const float far_away[3] = {200.0f, 0.0f, 0.0f};
+    TEST_ASSERT_TRUE(filter.GpsPositionNis(far_away, 5.0f) < 13.8f);
+}
+
+// Widening the measurement sigma has to soften the gate: a fix the receiver
+// has already told us is poor should not also be judged as if it were good.
+void test_a_wider_sigma_softens_the_gate() {
+    NavFilter filter;
+    for (int i = 0; i < 30; i++) {
+        const float here[3] = {0.0f, 0.0f, 0.0f};
+        filter.UpdateGpsPosition(here, 5.0f, 6.0f);
+    }
+    const float jumped[3] = {60.0f, 0.0f, 0.0f};
+    TEST_ASSERT_TRUE(filter.GpsPositionNis(jumped, 40.0f) < filter.GpsPositionNis(jumped, 5.0f));
+}
+
+// ── GPS fix quality (gps_quality.h) ──────────────────────────────────────────
+
+// The measured sigmas were taken at open-sky geometry, so that is exactly the
+// case the scale has to leave alone -- otherwise this change silently retunes
+// a filter that was calibrated against real data.
+void test_a_good_fix_is_trusted_exactly_as_measured() {
+    const GpsTrust trust = GpsFixTrust(9, 1.0f);
+    TEST_ASSERT_TRUE(trust.accepted);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, trust.sigma_scale);
+}
+
+void test_poor_geometry_widens_the_sigma_in_proportion_to_hdop() {
+    const GpsTrust trust = GpsFixTrust(9, 3.5f);
+    TEST_ASSERT_TRUE(trust.accepted);
+    TEST_ASSERT_EQUAL_FLOAT(3.5f, trust.sigma_scale);
+}
+
+// The whole point of the floor: flattering geometry is not evidence that
+// multipath went away, and multipath is what the measured scatter is made of.
+void test_excellent_geometry_cannot_tighten_the_sigma() {
+    const GpsTrust trust = GpsFixTrust(12, 0.5f);
+    TEST_ASSERT_TRUE(trust.accepted);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, trust.sigma_scale);
+}
+
+// Four satellites is a valid 3D fix with no redundancy at all, so it is used
+// but distrusted. Three is not a 3D fix: the altitude is assumed, not solved.
+void test_thin_constellations_are_distrusted_then_rejected() {
+    const GpsTrust four = GpsFixTrust(4, 1.0f);
+    TEST_ASSERT_TRUE(four.accepted);
+    TEST_ASSERT_TRUE(four.sigma_scale > 1.0f);
+
+    const GpsTrust five = GpsFixTrust(5, 1.0f);
+    TEST_ASSERT_TRUE(five.accepted);
+    TEST_ASSERT_TRUE(five.sigma_scale > 1.0f);
+    // Redundancy has to buy something: five must be trusted more than four.
+    TEST_ASSERT_TRUE(five.sigma_scale < four.sigma_scale);
+
+    TEST_ASSERT_FALSE(GpsFixTrust(3, 1.0f).accepted);
+    TEST_ASSERT_FALSE(GpsFixTrust(0, 1.0f).accepted);
+}
+
+// Both degradations apply at once -- a four-satellite fix in bad geometry is
+// worse than either fault alone.
+void test_bad_geometry_and_few_satellites_compound() {
+    const GpsTrust both = GpsFixTrust(4, 4.0f);
+    TEST_ASSERT_TRUE(both.accepted);
+    TEST_ASSERT_TRUE(both.sigma_scale > GpsFixTrust(9, 4.0f).sigma_scale);
+    TEST_ASSERT_TRUE(both.sigma_scale > GpsFixTrust(4, 1.0f).sigma_scale);
+}
+
+// A missing HDOP reads as 0, and 0 must never be taken at face value: as a
+// scale it would drive the sigma to zero and the Kalman gain to 1, handing the
+// filter's entire position over to one unvetted fix.
+void test_an_unreported_hdop_is_penalised_not_believed() {
+    const GpsTrust trust = GpsFixTrust(9, 0.0f);
+    TEST_ASSERT_TRUE(trust.accepted);
+    TEST_ASSERT_TRUE(trust.sigma_scale > 1.0f);
+
+    const GpsTrust nan_hdop = GpsFixTrust(9, NAN);
+    TEST_ASSERT_TRUE(nan_hdop.accepted);
+    TEST_ASSERT_TRUE(isfinite(nan_hdop.sigma_scale));
+    TEST_ASSERT_TRUE(nan_hdop.sigma_scale > 1.0f);
+}
+
+// 99.99 is how a receiver spells "no value", and it must not be mistaken for
+// the merely-poor geometry that an unreported HDOP gets.
+void test_the_invalid_hdop_sentinel_is_rejected() {
+    TEST_ASSERT_FALSE(GpsFixTrust(9, 99.99f).accepted);
+    TEST_ASSERT_FALSE(GpsFixTrust(9, 50.0f).accepted);
+}
+
+// Whatever the receiver claims, the scale never argues a sigma below the
+// measured one. Sweeping the whole plausible input space is the cheapest way
+// to be sure no combination slips through.
+void test_no_reported_quality_can_increase_trust() {
+    for (int sats = 0; sats <= 20; sats++) {
+        for (float hdop = -1.0f; hdop <= 25.0f; hdop += 0.25f) {
+            const GpsTrust trust = GpsFixTrust(static_cast<uint8_t>(sats), hdop);
+            if (!trust.accepted) {
+                continue;
+            }
+            TEST_ASSERT_TRUE(isfinite(trust.sigma_scale));
+            TEST_ASSERT_TRUE(trust.sigma_scale >= 1.0f);
+        }
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_reset_is_at_origin_with_positive_covariance);
@@ -457,5 +618,18 @@ int main() {
     RUN_TEST(test_geo_degree_scales_are_physical);
     RUN_TEST(test_geo_projection_is_relative_to_origin);
     RUN_TEST(test_course_maps_to_enu_velocity);
+    RUN_TEST(test_snapping_to_a_fix_leaves_a_consistent_covariance);
+    RUN_TEST(test_a_fix_where_the_filter_expects_one_scores_near_zero);
+    RUN_TEST(test_a_multipath_jump_scores_far_past_the_gate);
+    RUN_TEST(test_an_uncertain_filter_accepts_a_distant_fix);
+    RUN_TEST(test_a_wider_sigma_softens_the_gate);
+    RUN_TEST(test_a_good_fix_is_trusted_exactly_as_measured);
+    RUN_TEST(test_poor_geometry_widens_the_sigma_in_proportion_to_hdop);
+    RUN_TEST(test_excellent_geometry_cannot_tighten_the_sigma);
+    RUN_TEST(test_thin_constellations_are_distrusted_then_rejected);
+    RUN_TEST(test_bad_geometry_and_few_satellites_compound);
+    RUN_TEST(test_an_unreported_hdop_is_penalised_not_believed);
+    RUN_TEST(test_the_invalid_hdop_sentinel_is_rejected);
+    RUN_TEST(test_no_reported_quality_can_increase_trust);
     return UNITY_END();
 }

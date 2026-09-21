@@ -124,22 +124,128 @@ bool MagIsLive(const float mag[3]) {
 // hands back corrupted bytes. Re-initialising is the only way back.
 uint32_t initialised_bus_generation = 0;
 
+// ── Full-scale ranges ───────────────────────────────────────────────────────
+// The ranges in force, and the full scale they imply.
+//
+// Touched only from the estimator task: ImuSetRanges() is called from Tick(),
+// and every read of these happens in that same task. No lock is needed, and
+// one should not be added casually -- the web handler deliberately does not
+// call in here. It only moves the requested numbers into FilterParams, and
+// Tick() applies them, because this task owns the bus.
+int accel_range_g = IMU_ACCEL_RANGE_G;
+int gyro_range_dps = IMU_GYRO_RANGE_DPS;
+int mag_range_gauss = IMU_MAG_RANGE_GAUSS;
+sensor_limits::FullScale full_scale = sensor_limits::kDefaultFullScale;
+
+constexpr int kAccelRangesG[] = {2, 4, 8, 16};
+constexpr int kGyroRangesDps[] = {125, 250, 500, 1000, 2000};
+constexpr int kMagRangesGauss[] = {4, 8, 12, 16};
+
+// Snaps a request to the nearest range the chip actually has. A value that is
+// not offered has to become *something*, and silently picking the default
+// would hide a typo in a build flag.
+int SnapToSupported(int requested, const int* supported, int count) {
+    int best = supported[0];
+    int best_distance = requested > best ? requested - best : best - requested;
+    for (int i = 1; i < count; i++) {
+        const int distance =
+            requested > supported[i] ? requested - supported[i] : supported[i] - requested;
+        if (distance < best_distance) {
+            best = supported[i];
+            best_distance = distance;
+        }
+    }
+    return best;
+}
+
+// The accelerometer enum is not in numeric order in the Adafruit header --
+// 2 g = 0, 16 g = 1, 4 g = 2, 8 g = 3 -- so the mapping has to be spelled out.
+// Deriving it arithmetically from the range would quietly select 16 g where
+// 4 g was asked for.
+lsm6ds_accel_range_t AccelRangeEnum(int range_g) {
+    switch (range_g) {
+        case 2:
+            return LSM6DS_ACCEL_RANGE_2_G;
+        case 8:
+            return LSM6DS_ACCEL_RANGE_8_G;
+        case 16:
+            return LSM6DS_ACCEL_RANGE_16_G;
+        default:
+            return LSM6DS_ACCEL_RANGE_4_G;
+    }
+}
+
+lsm6ds_gyro_range_t GyroRangeEnum(int range_dps) {
+    switch (range_dps) {
+        case 125:
+            return LSM6DS_GYRO_RANGE_125_DPS;
+        case 250:
+            return LSM6DS_GYRO_RANGE_250_DPS;
+        case 500:
+            return LSM6DS_GYRO_RANGE_500_DPS;
+        case 2000:
+            return LSM6DS_GYRO_RANGE_2000_DPS;
+        default:
+            return LSM6DS_GYRO_RANGE_1000_DPS;
+    }
+}
+
+lis3mdl_range_t MagRangeEnum(int range_gauss) {
+    switch (range_gauss) {
+        case 8:
+            return LIS3MDL_RANGE_8_GAUSS;
+        case 12:
+            return LIS3MDL_RANGE_12_GAUSS;
+        case 16:
+            return LIS3MDL_RANGE_16_GAUSS;
+        default:
+            return LIS3MDL_RANGE_4_GAUSS;
+    }
+}
+
+lsm6ds_data_rate_t AccelGyroOdrEnum(int hz) {
+    switch (hz) {
+        case 26:
+            return LSM6DS_RATE_26_HZ;
+        case 52:
+            return LSM6DS_RATE_52_HZ;
+        case 104:
+            return LSM6DS_RATE_104_HZ;
+        case 416:
+            return LSM6DS_RATE_416_HZ;
+        case 833:
+            return LSM6DS_RATE_833_HZ;
+        case 1666:
+            return LSM6DS_RATE_1_66K_HZ;
+        default:
+            return LSM6DS_RATE_208_HZ;
+    }
+}
+
 // Applies the ranges and output data rates the filter expects.
 //
-// 833 Hz comfortably exceeds the 200 Hz estimator tick, so every read sees a
-// fresh sample. The LIS3MDL tops out at 155 Hz, below the tick rate, so some
-// ticks re-read the same magnetometer sample -- harmless, because VQF's
-// magnetic correction is a heavily low-pass-filtered term with a ~9 s time
-// constant and does not need gyro-rate updates.
+// Called on every successful begin_I2C() as well as on a range change, so a
+// chip that drops off the bus and comes back returns on the range the user
+// selected rather than reverting to the compile-time default.
+//
+// The rate comes from IMU_ACCEL_GYRO_ODR_HZ -- 208 Hz against the 200 Hz tick,
+// chosen so the part's own anti-alias filter does the band-limiting the polled
+// read path cannot. See the comment on that define for what it trades away.
+//
+// The LIS3MDL tops out at 155 Hz, below the tick rate, so some ticks re-read
+// the same magnetometer sample -- harmless, because VQF's magnetic correction
+// is a heavily low-pass-filtered term with a ~9 s time constant and does not
+// need gyro-rate updates.
 void ConfigureAccelGyro() {
-    lsm.setAccelRange(LSM6DS_ACCEL_RANGE_4_G);
-    lsm.setGyroRange(LSM6DS_GYRO_RANGE_1000_DPS);
-    lsm.setAccelDataRate(LSM6DS_RATE_833_HZ);
-    lsm.setGyroDataRate(LSM6DS_RATE_833_HZ);
+    const lsm6ds_data_rate_t rate = AccelGyroOdrEnum(IMU_ACCEL_GYRO_ODR_HZ);
+    lsm.setAccelRange(AccelRangeEnum(accel_range_g));
+    lsm.setGyroRange(GyroRangeEnum(gyro_range_dps));
+    lsm.setAccelDataRate(rate);
+    lsm.setGyroDataRate(rate);
 }
 
 void ConfigureMagnetometer() {
-    lis.setRange(LIS3MDL_RANGE_4_GAUSS);
+    lis.setRange(MagRangeEnum(mag_range_gauss));
     // setDataRate() picks the performance mode itself -- 155 Hz is only
     // reachable in ultra-high-performance mode, so the library switches to it.
     // Calling setPerformanceMode() afterwards overwrites that into a
@@ -299,7 +405,7 @@ bool ImuRead(ImuSample& out) {
 
             // The driver returns true whatever happened on the bus, so the
             // numbers themselves have to be the check.
-            if (sensor_limits::AccelGyroLooksValid(out.accel, out.gyro)) {
+            if (sensor_limits::AccelGyroLooksValid(out.accel, out.gyro, full_scale)) {
                 out.accel_gyro_valid = true;
                 NoteSuccess(accel_gyro);
             } else {
@@ -334,7 +440,7 @@ bool ImuRead(ImuSample& out) {
                 return out.accel_gyro_valid;
             }
 
-            if (!sensor_limits::MagLooksValid(out.mag)) {
+            if (!sensor_limits::MagLooksValid(out.mag, full_scale)) {
                 // Clear the reading as well as flagging it. Otherwise the
                 // rejected values still travel to the dashboard, where they
                 // look exactly like a broken sensor.
@@ -387,6 +493,51 @@ bool ImuMagHealthy() {
 
 uint32_t ImuFailureCount() {
     return accel_gyro.total_failures + magnetometer.total_failures;
+}
+
+bool ImuSetRanges(int accel_g, int gyro_dps, int mag_gauss) {
+    const int wanted_accel = SnapToSupported(accel_g, kAccelRangesG, 4);
+    const int wanted_gyro = SnapToSupported(gyro_dps, kGyroRangesDps, 5);
+    const int wanted_mag = SnapToSupported(mag_gauss, kMagRangesGauss, 4);
+
+    const bool accel_changed = wanted_accel != accel_range_g;
+    const bool gyro_changed = wanted_gyro != gyro_range_dps;
+    const bool mag_changed = wanted_mag != mag_range_gauss;
+    if (!accel_changed && !gyro_changed && !mag_changed) {
+        return false;
+    }
+
+    accel_range_g = wanted_accel;
+    gyro_range_dps = wanted_gyro;
+    mag_range_gauss = wanted_mag;
+
+    // The plausibility limits have to move with the range in the same step.
+    // Leaving them behind would reject every reading past the old full scale
+    // as corrupt, which on the dashboard looks exactly like a dying sensor.
+    full_scale = sensor_limits::FullScaleFor(accel_range_g, gyro_range_dps, mag_range_gauss);
+
+    // An offline chip is not written to -- the new range is already stored,
+    // and BeginAccelGyro()/BeginMagnetometer() apply it when it comes back.
+    if ((accel_changed || gyro_changed) && accel_gyro.healthy) {
+        ConfigureAccelGyro();
+    }
+    if (mag_changed && magnetometer.healthy) {
+        ConfigureMagnetometer();
+        // The frozen-magnetometer detector compares consecutive readings, and
+        // a range change puts them on a different quantisation step. Its
+        // history is from the old scale, so start the run over.
+        identical_mag_samples = 0;
+    }
+
+    Serial.printf("[imu] ranges now +-%d g, +-%d dps, +-%d gauss\n", accel_range_g, gyro_range_dps,
+                  mag_range_gauss);
+    return accel_changed;
+}
+
+void ImuGetRanges(int& accel_g, int& gyro_dps, int& mag_gauss) {
+    accel_g = accel_range_g;
+    gyro_dps = gyro_range_dps;
+    mag_gauss = mag_range_gauss;
 }
 
 void ImuPowerDown() {

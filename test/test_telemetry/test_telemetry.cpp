@@ -8,6 +8,7 @@
 // The encoded frame is also printed, so it can be fed to the dashboard's own
 // JavaScript in a headless harness (see tools/check_dashboard.mjs).
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <unity.h>
@@ -87,6 +88,10 @@ EstimatorSnapshot MakeSnapshot() {
     s.gps_enu_valid = true;
     s.gps_fix_age_ms = 420;
     s.gps_update_count = 37;
+    s.gps_rejected_count = 4;
+    s.gps_sigma_h_m = 7.5f;
+    s.gps_epoch_tod_ms = 45296789;
+    s.gps_epoch_valid = true;
 
     s.origin_valid = true;
     s.origin_lat = 52.5199000;
@@ -99,6 +104,29 @@ EstimatorSnapshot MakeSnapshot() {
     s.imu_failures = 2;
     s.gps_failures = 1;
     s.filter_resets = 0;
+    return s;
+}
+
+// The analyser's state as the frame echoes it. Switched on and pointed at the
+// gyroscope, so the dashboard harness exercises the panel-visible path and a
+// source dropdown that has to sync to something other than its default.
+const SpectrumConfig spec = {/*enabled=*/true, SpectrumSource::kGyro};
+
+// A spectrum with one obvious peak, so a bin that lands in the wrong place is
+// visible in the output rather than hidden in 129 similar numbers.
+SpectrumSnapshot MakeSpectrum() {
+    SpectrumSnapshot s;
+    s.valid = true;
+    s.source = SpectrumSource::kGyro;
+    s.timestamp_ms = 1234567;
+    s.sample_rate_hz = 199.6f;
+    for (int axis = 0; axis < 3; axis++) {
+        for (int bin = 0; bin < spectrum::kBins; bin++) {
+            s.bins[axis][bin] = 0.001f;
+        }
+        // A distinct peak per axis: x at bin 20, y at 21, z at 22.
+        s.bins[axis][20 + axis] = 0.25f + 0.1f * axis;
+    }
     return s;
 }
 
@@ -116,7 +144,8 @@ void test_full_frame_encodes_within_the_buffer() {
     const EstimatorSnapshot snapshot = MakeSnapshot();
     const FilterParams params;
 
-    const size_t length = BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal");
+    const size_t length =
+        BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal", spec);
 
     TEST_ASSERT_TRUE(length > 0);
     TEST_ASSERT_EQUAL_size_t(strlen(buffer), length);
@@ -133,7 +162,7 @@ void test_frame_contains_every_key_the_dashboard_reads() {
     char buffer[kTelemetryBufferSize];
     const EstimatorSnapshot snapshot = MakeSnapshot();
     const FilterParams params;
-    BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal");
+    BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal", spec);
 
     const char* required[] = {
         "\"t\":",
@@ -159,11 +188,16 @@ void test_frame_contains_every_key_the_dashboard_reads() {
         "\"fix\":",
         "\"sat\":",
         "\"hdop\":",
+        "\"rej\":",
+        "\"sig\":",
+        "\"ep\":",
+        "\"epok\":",
         "\"enuok\":",
         "\"enu\":",
         "\"n\":",
         "\"org\":",
         "\"health\":",
+        "\"aux\":",
         "\"params\":",
         "\"sigma_accel\":",
         "\"sigma_accel_bias\":",
@@ -174,6 +208,7 @@ void test_frame_contains_every_key_the_dashboard_reads() {
         "\"tau_acc\":",
         "\"tau_mag\":",
         "\"zupt_enabled\":",
+        "\"gps_enabled\":",
         "\"gps_vel_enabled\":",
         // Magnetometer calibration state.
         "\"magcal\":",
@@ -192,6 +227,16 @@ void test_frame_contains_every_key_the_dashboard_reads() {
         "\"sigma_baro\":",
         "\"sigma_baro_bias\":",
         "\"baro_enabled\":",
+        // IMU full-scale ranges. The dashboard seeds its dropdowns from these,
+        // so a missing one leaves the UI showing a range the chip is not on.
+        "\"accel_range_g\":",
+        "\"gyro_range_dps\":",
+        "\"mag_range_gauss\":",
+        // Spectral analyser state. Not the spectrum itself -- that is its own
+        // frame -- but what the dashboard needs to show the panel at all.
+        "\"spec\":",
+        "\"on\":",
+        "\"src\":",
     };
     for (const char* key : required) {
         TEST_ASSERT_NOT_NULL_MESSAGE(strstr(buffer, key), key);
@@ -204,7 +249,7 @@ void test_position_is_encoded_at_full_precision() {
     char buffer[kTelemetryBufferSize];
     const EstimatorSnapshot snapshot = MakeSnapshot();
     const FilterParams params;
-    BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal");
+    BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal", spec);
 
     TEST_ASSERT_NOT_NULL(strstr(buffer, "52.5200123"));
     TEST_ASSERT_NOT_NULL(strstr(buffer, "13.4050456"));
@@ -218,7 +263,7 @@ void test_short_buffer_emits_nothing() {
     const FilterParams params;
 
     TEST_ASSERT_EQUAL_size_t(
-        0, BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal"));
+        0, BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal", spec));
 }
 
 // Every boolean in the frame, in both states.
@@ -240,21 +285,30 @@ void test_every_boolean_encodes_in_both_states() {
     set.baro_healthy = true;
     set.gps_fix = true;
     set.gps_enu_valid = true;
+    set.gps_epoch_valid = true;
     set.origin_valid = true;
     set.imu_healthy = true;
     set.mag_healthy = true;
     set.gps_healthy = true;
     FilterParams params_set;
     params_set.zupt_enabled = true;
+    params_set.gps_enabled = true;
     params_set.gps_vel_enabled = true;
     params_set.baro_enabled = true;
 
-    TEST_ASSERT_TRUE(BuildTelemetryFrame(buffer, sizeof(buffer), set, params_set, "normal") > 0);
-    const char* when_set[] = {"\"rest\":1",        "\"magdist\":1",      "\"done\":1",
-                              "\"busy\":1",        "\"ok\":1",           "\"fix\":1",
-                              "\"enuok\":1",       "\"imu\":1",          "\"mag\":1",
-                              "\"gps\":1",         "\"zupt_enabled\":1", "\"gps_vel_enabled\":1",
-                              "\"baro_enabled\":1"};
+    SpectrumConfig spec_set;
+    spec_set.enabled = true;
+
+    TEST_ASSERT_TRUE(
+        BuildTelemetryFrame(buffer, sizeof(buffer), set, params_set, "normal", spec_set) > 0);
+    const char* when_set[] = {"\"rest\":1",         "\"magdist\":1",
+                              "\"done\":1",         "\"busy\":1",
+                              "\"ok\":1",           "\"fix\":1",
+                              "\"enuok\":1",        "\"epok\":1",
+                              "\"imu\":1",          "\"mag\":1",
+                              "\"gps\":1",          "\"zupt_enabled\":1",
+                              "\"gps_enabled\":1",  "\"gps_vel_enabled\":1",
+                              "\"baro_enabled\":1", "\"on\":1"};
     for (const char* needle : when_set) {
         TEST_ASSERT_NOT_NULL_MESSAGE(strstr(buffer, needle), needle);
     }
@@ -267,24 +321,63 @@ void test_every_boolean_encodes_in_both_states() {
     clear.baro_healthy = false;
     clear.gps_fix = false;
     clear.gps_enu_valid = false;
+    clear.gps_epoch_valid = false;
     clear.origin_valid = false;
     clear.imu_healthy = false;
     clear.mag_healthy = false;
     clear.gps_healthy = false;
     FilterParams params_clear;
     params_clear.zupt_enabled = false;
+    params_clear.gps_enabled = false;
     params_clear.gps_vel_enabled = false;
     params_clear.baro_enabled = false;
 
-    TEST_ASSERT_TRUE(BuildTelemetryFrame(buffer, sizeof(buffer), clear, params_clear, "error") > 0);
-    const char* when_clear[] = {"\"rest\":0",        "\"magdist\":0",      "\"done\":0",
-                                "\"busy\":0",        "\"ok\":0",           "\"fix\":0",
-                                "\"enuok\":0",       "\"imu\":0",          "\"mag\":0",
-                                "\"gps\":0",         "\"zupt_enabled\":0", "\"gps_vel_enabled\":0",
-                                "\"baro_enabled\":0"};
+    SpectrumConfig spec_clear;
+    spec_clear.enabled = false;
+
+    TEST_ASSERT_TRUE(
+        BuildTelemetryFrame(buffer, sizeof(buffer), clear, params_clear, "error", spec_clear) > 0);
+    const char* when_clear[] = {"\"rest\":0",         "\"magdist\":0",
+                                "\"done\":0",         "\"busy\":0",
+                                "\"ok\":0",           "\"fix\":0",
+                                "\"enuok\":0",        "\"epok\":0",
+                                "\"imu\":0",          "\"mag\":0",
+                                "\"gps\":0",          "\"zupt_enabled\":0",
+                                "\"gps_enabled\":0",  "\"gps_vel_enabled\":0",
+                                "\"baro_enabled\":0", "\"on\":0"};
     for (const char* needle : when_clear) {
         TEST_ASSERT_NOT_NULL_MESSAGE(strstr(buffer, needle), needle);
     }
+}
+
+// The ranges must survive as the integers they were set to. This is the
+// failure `baro_enabled` already had once: the key present, the value wrong or
+// the field quietly dropped, with the firmware and the dashboard each certain
+// the other agreed with it.
+void test_imu_ranges_are_encoded_as_set() {
+    char buffer[kTelemetryBufferSize];
+    const EstimatorSnapshot snapshot = MakeSnapshot();
+
+    FilterParams params;
+    params.accel_range_g = 16;
+    params.gyro_range_dps = 2000;
+    params.mag_range_gauss = 12;
+
+    TEST_ASSERT_TRUE(BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal", spec) >
+                     0);
+    const char* expected[] = {"\"accel_range_g\":16", "\"gyro_range_dps\":2000",
+                              "\"mag_range_gauss\":12"};
+    for (const char* needle : expected) {
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(buffer, needle), needle);
+    }
+
+    // And the boot defaults, which is what an untouched dashboard shows.
+    const FilterParams defaults;
+    TEST_ASSERT_TRUE(
+        BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, defaults, "normal", spec) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "\"accel_range_g\":4"));
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "\"gyro_range_dps\":1000"));
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "\"mag_range_gauss\":4"));
 }
 
 // The encoder stops at whichever field overruns the buffer, and there is a
@@ -297,13 +390,14 @@ void test_every_truncation_point_fails_safe() {
     const FilterParams params;
 
     char full[kTelemetryBufferSize];
-    const size_t complete = BuildTelemetryFrame(full, sizeof(full), snapshot, params, "normal");
+    const size_t complete =
+        BuildTelemetryFrame(full, sizeof(full), snapshot, params, "normal", spec);
     TEST_ASSERT_TRUE(complete > 0);
 
     char buffer[kTelemetryBufferSize];
     for (size_t size = 1; size <= complete + 1; size++) {
         memset(buffer, 0x7f, sizeof(buffer));
-        const size_t used = BuildTelemetryFrame(buffer, size, snapshot, params, "normal");
+        const size_t used = BuildTelemetryFrame(buffer, size, snapshot, params, "normal", spec);
         if (used == 0) {
             continue;
         }
@@ -313,8 +407,119 @@ void test_every_truncation_point_fails_safe() {
 
     // The smallest buffer that can hold the frame does produce it, so the
     // sweep above is not simply refusing every size.
-    TEST_ASSERT_EQUAL_size_t(complete,
-                             BuildTelemetryFrame(buffer, complete + 1, snapshot, params, "normal"));
+    TEST_ASSERT_EQUAL_size_t(
+        complete, BuildTelemetryFrame(buffer, complete + 1, snapshot, params, "normal", spec));
+}
+
+// ── Spectrum frames ────────────────────────────────────────────────────────
+
+// The spectrum frame is the larger half of the contract, and the buffer it has
+// to fit in was sized by arithmetic rather than by measurement. This is the
+// measurement.
+void test_spectrum_frame_encodes_within_the_buffer() {
+    char buffer[kSpectrumBufferSize];
+    const size_t length = BuildSpectrumFrame(buffer, sizeof(buffer), MakeSpectrum());
+
+    TEST_ASSERT_TRUE(length > 0);
+    TEST_ASSERT_EQUAL_size_t(strlen(buffer), length);
+    TEST_ASSERT_EQUAL_CHAR('{', buffer[0]);
+    TEST_ASSERT_EQUAL_CHAR('}', buffer[length - 1]);
+
+    // Printed so the headless dashboard harness can replay a real one.
+    printf("\nSPECTRUM:%s\n", buffer);
+}
+
+// Worst case for the encoder is not the largest numbers but the longest ones:
+// %.4g spends most characters on a small value in exponent form.
+void test_a_worst_case_spectrum_still_fits() {
+    SpectrumSnapshot worst = MakeSpectrum();
+    for (int axis = 0; axis < 3; axis++) {
+        for (int bin = 0; bin < spectrum::kBins; bin++) {
+            worst.bins[axis][bin] = 1.2345e-11f;
+        }
+    }
+    char buffer[kSpectrumBufferSize];
+    TEST_ASSERT_TRUE(BuildSpectrumFrame(buffer, sizeof(buffer), worst) > 0);
+}
+
+void test_spectrum_frame_carries_what_the_dashboard_reads() {
+    char buffer[kSpectrumBufferSize];
+    BuildSpectrumFrame(buffer, sizeof(buffer), MakeSpectrum());
+
+    // "type" is the only thing separating this from a telemetry frame.
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "\"type\":\"spec\""));
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "\"src\":\"gyro\""));
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "\"fs\":199.60"));
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "\"n\":256"));
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "\"bins\":[["));
+    // Three axes, so two separators between them and a nested close at the end.
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "],["));
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "]]}"));
+    // The per-axis peaks, which is how a transposed or reused axis shows up.
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "0.25"));
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "0.35"));
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "0.45"));
+}
+
+// Accelerometer is the other source name, and the one the dashboard defaults
+// to -- a frame that always said "gyro" would still pass the test above.
+void test_the_accelerometer_source_is_named_too() {
+    SpectrumSnapshot from_accel = MakeSpectrum();
+    from_accel.source = SpectrumSource::kAccel;
+
+    char buffer[kSpectrumBufferSize];
+    BuildSpectrumFrame(buffer, sizeof(buffer), from_accel);
+    TEST_ASSERT_NOT_NULL(strstr(buffer, "\"src\":\"accel\""));
+}
+
+// Nothing has been computed yet: there is no spectrum to send, as opposed to
+// an empty one. Sending 129 zeros would draw a floor that looks like a reading.
+void test_an_invalid_spectrum_emits_nothing() {
+    SpectrumSnapshot nothing_yet = MakeSpectrum();
+    nothing_yet.valid = false;
+
+    char buffer[kSpectrumBufferSize];
+    TEST_ASSERT_EQUAL_size_t(0, BuildSpectrumFrame(buffer, sizeof(buffer), nothing_yet));
+}
+
+// A NaN would encode as "nan", which is not JSON -- JSON.parse throws and the
+// dashboard loses the whole frame rather than the one bin.
+void test_non_finite_bins_encode_as_zero() {
+    SpectrumSnapshot poisoned = MakeSpectrum();
+    poisoned.bins[0][5] = NAN;
+    poisoned.bins[1][6] = INFINITY;
+    poisoned.bins[2][7] = -INFINITY;
+
+    char buffer[kSpectrumBufferSize];
+    TEST_ASSERT_TRUE(BuildSpectrumFrame(buffer, sizeof(buffer), poisoned) > 0);
+    TEST_ASSERT_NULL(strstr(buffer, "nan"));
+    TEST_ASSERT_NULL(strstr(buffer, "inf"));
+    TEST_ASSERT_NULL(strstr(buffer, "NAN"));
+    TEST_ASSERT_NULL(strstr(buffer, "INF"));
+}
+
+// Same sweep as the telemetry frame: every buffer size either yields the whole
+// frame or nothing, never a truncated one. The spectrum frame has far more
+// places to run out, since it appends one number at a time.
+void test_every_spectrum_truncation_point_fails_safe() {
+    const SpectrumSnapshot reference = MakeSpectrum();
+
+    char full[kSpectrumBufferSize];
+    const size_t complete = BuildSpectrumFrame(full, sizeof(full), reference);
+    TEST_ASSERT_TRUE(complete > 0);
+
+    char buffer[kSpectrumBufferSize];
+    for (size_t size = 1; size <= complete + 1; size++) {
+        memset(buffer, 0x7f, sizeof(buffer));
+        const size_t used = BuildSpectrumFrame(buffer, size, reference);
+        if (used == 0) {
+            continue;
+        }
+        TEST_ASSERT_EQUAL_size_t(complete, used);
+        TEST_ASSERT_EQUAL_STRING(full, buffer);
+    }
+
+    TEST_ASSERT_EQUAL_size_t(complete, BuildSpectrumFrame(buffer, complete + 1, reference));
 }
 
 int main() {
@@ -322,8 +527,16 @@ int main() {
     RUN_TEST(test_full_frame_encodes_within_the_buffer);
     RUN_TEST(test_frame_contains_every_key_the_dashboard_reads);
     RUN_TEST(test_position_is_encoded_at_full_precision);
+    RUN_TEST(test_imu_ranges_are_encoded_as_set);
     RUN_TEST(test_short_buffer_emits_nothing);
     RUN_TEST(test_every_boolean_encodes_in_both_states);
     RUN_TEST(test_every_truncation_point_fails_safe);
+    RUN_TEST(test_spectrum_frame_encodes_within_the_buffer);
+    RUN_TEST(test_a_worst_case_spectrum_still_fits);
+    RUN_TEST(test_spectrum_frame_carries_what_the_dashboard_reads);
+    RUN_TEST(test_the_accelerometer_source_is_named_too);
+    RUN_TEST(test_an_invalid_spectrum_emits_nothing);
+    RUN_TEST(test_non_finite_bins_encode_as_zero);
+    RUN_TEST(test_every_spectrum_truncation_point_fails_safe);
     return UNITY_END();
 }

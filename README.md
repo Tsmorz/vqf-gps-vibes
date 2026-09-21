@@ -187,17 +187,21 @@ To cut a release, tag and push: `git tag v1.0.0 && git push origin v1.0.0`.
 
 ## Dashboard
 
-Six panels, all drawn with plain canvas — no CDN, since the board serves the page
-from its own access point with no internet behind it.
+All drawn with plain canvas — no CDN, since the board serves the page from its
+own access point with no internet behind it.
 
 - **Orientation** — the body's unit axes rotated by the VQF quaternion, against a
   faint ENU world frame. Drag to orbit.
 - **IMU** — accelerometer, gyroscope and magnetometer time series.
+- **Spectrum** — off by default; a rolling FFT of the raw 200 Hz tick data, for
+  finding what keeps ringing after an excitation. See below.
 - **Position (3D)** — the estimated trajectory in local ENU, raw GPS fixes, and
   the 3σ uncertainty ellipsoid. Drag to orbit.
 - **Position vs time** — east/north/up, each with its ±3σ envelope shaded and raw
   fixes overlaid.
 - **Velocity vs time** — same, for the velocity states.
+- **Barometer** — fused height against the barometer's own, offset removed.
+- **Power** — cuts or restores the GPS and barometer's rail (LDO2).
 - **Filter tuning** — the control knobs, below.
 
 ### Control knobs
@@ -215,6 +219,48 @@ Sliders are logarithmic, because these sigmas span orders of magnitude.
 
 Changes take effect on the next filter tick. Nothing is persisted — a reboot
 returns to the defaults in `include/config.h`.
+
+## Spectral analysis
+
+Switched off by default, and costing nothing while off. Switched on, it answers
+one question: **after an excitation — a tap, a throttle step, a released
+deflection — which frequencies keep ringing, and for how long?**
+
+The telemetry stream cannot answer that. It runs at 20 Hz, so anything above
+10 Hz aliases, and structural modes are usually well above it. The analyser
+therefore works from the estimator's own 200 Hz tick data, on the board:
+
+| | |
+|---|---|
+| Window | 256 ticks = 1.28 s |
+| Bins | 129, 0.78 Hz apart, 0–100 Hz |
+| Window function | periodic Hann (coherent gain 0.5, corrected for) |
+| Update | every 250 ms, so windows overlap by 80% |
+| Sources | accelerometer or gyroscope, three axes each |
+| Units | amplitude in the sensor's own units — a 1.0 m/s² tone reads 1.0 |
+
+The band stops at 100 Hz because that is where the sensor stops: at
+`IMU_ACCEL_GYRO_ODR_HZ` = 208 the LSM6DSOX band-limits itself to ~104 Hz.
+
+**Read the peak hold, not the live trace.** The faint dashed lines hold the
+highest value each bin has reached since you last cleared them. A ringdown is
+over in a few hundred milliseconds — by the time you look up, the live trace is
+back in the noise and the hold is the only thing still showing what rang. The
+*dominant* readout comes off the hold; *live peak* comes off the current frame,
+so the two together say what rang and whether it still is.
+
+*Ignore below* moves only the dominant readout, not the plot. Hand-holding the
+board writes 1–3 Hz of motion into the accelerometer that is larger than any
+structural mode, and a readout that always says 1.6 Hz is worse than none.
+
+Both sensors are buffered even though only one is transformed, so switching
+source re-reads the *same* 1.28 s rather than starting a fresh window — tap
+once, then compare what the accelerometer saw against the gyroscope.
+
+The transform is `src/spectrum.h`: pure math, Arduino-free, and unit tested
+against synthetic tones in `test/test_spectrum/`, because a scaling slip there
+produces a plot that looks entirely plausible and puts every resonance at the
+wrong frequency. The ring buffer and the scheduling are `src/vibration.cpp`.
 
 ## Magnetometer calibration
 
@@ -302,6 +348,7 @@ The LED goes dark before deep sleep, using a black pixel rather than GPIO 39.
 ```
 core 1   estimator task, 200 Hz — owns the I2C bus         src/estimator.cpp
 core 0   Arduino loop — WiFi AP, dashboard, status LED     src/main.cpp
+         ...and the FFT, which must not run on core 1      src/vibration.cpp
 ```
 
 ```
@@ -316,6 +363,8 @@ src/
   filter_params.h     the runtime-tunable knobs
   imu.cpp/.h          LSM6DSOX + LIS3MDL, with reconnect, mag calibration, power-down
   mag_cal.h           hard/soft-iron fit (pure math, unit tested)
+  spectrum.h          Hann-windowed radix-2 FFT (pure math, unit tested)
+  vibration.cpp/.h    the spectrum panel's ring buffer and scheduling
   baro.cpp/.h         BMP390 pressure altitude
   button.cpp/.h       BOOT button: debounce, short/long press, deep-sleep entry
   board_power.cpp/.h  LDO2 control: bring-up, power-cycle, sleep latch

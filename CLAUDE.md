@@ -54,6 +54,15 @@ on the bench before it was caught. `imu.cpp` probes the chip's I2C address every
 250 ms instead; do not replace that with a check of the driver's return value.
 The GPS has the same probe for the same reason.
 
+**Cutting LDO2 at runtime is a request to the estimator, and it must not look like a dead
+bus.** The dashboard's power button calls `EstimatorSetAuxPower()`; the estimator task
+applies it, since it owns the buses. On power-up it waits `kAuxRailSettleMs` without
+blocking the tick, then restarts the aux bus (bumping the generation so both drivers
+re-init) and calls `I2cNoteTransferOk()`. Skip that last call and the watchdog reads the
+silent off period as a dead bus and power-cycles the rail. While off, GPS and baro are
+not polled and are reported unhealthy, and `EvaluateStatus()` does not treat that as
+degraded. The LED shares the rail and goes dark.
+
 **Deep sleep goes through the estimator.** `EstimatorPrepareSleep()` hands the IMU
 power-down to the estimator task, since it owns the buses; do not call
 `ImuPowerDown()` from `loop()`. The LDO2 latch in `BoardPowerSleep()` must be
@@ -65,6 +74,21 @@ monitor is draining the port, and `loop()` — which services the web server —
 then runs at about 1 Hz. Symptom: everything is fine over USB and the dashboard
 is unusable untethered (a 15 ms WebSocket handshake becomes 15 s). If you add
 logging to `loop()`, this is why it must stay non-blocking.
+
+**The spectrum's window must be de-interleaved into chronological order, not
+read out of the ring as it lies.** An *unwindowed* FFT's magnitudes are
+invariant to a circular shift, which makes it very easy to argue that the
+rotation in `VibrationService()` is redundant. A windowed one is not: applying
+the Hann taper by ring index tapers the middle of the record and leaves the
+wrap — a step between two samples 1.28 s apart — at full amplitude, which is
+exactly the leakage the window exists to remove. Peaks stay put and the noise
+floor quietly rises by 20 dB, so nothing about the plot looks wrong.
+
+**The FFT runs on core 0, from `loop()`.** `VibrationPushSample()` is the only
+part on the estimator's tick, and it is seven stores under a spinlock. Moving
+the transform onto core 1 would put a few hundred microseconds of arithmetic
+into a 5000 µs budget that is already mostly I2C waits. The analyser is also
+off by default and returns on a flag check — keep both properties.
 
 **VQF is vendored, not implemented here.** `lib/vqf/` is verbatim from
 <https://github.com/dlaidig/vqf> (MIT). Don't edit it; treat it as a black box
@@ -95,9 +119,14 @@ tick jitter.
 | Sensor reconnect behaviour | `src/imu.cpp`, `src/gps.cpp`, `src/i2c_bus.cpp` |
 | Status LED colours and patterns | `src/status_led.cpp`, `EvaluateStatus()` in `src/main.cpp` |
 | Behaviour when a sensor drops out | `PredictCoasting()`/`IsDiverged()` in `src/nav_filter.h` |
+| How far a GPS fix is trusted, from satellites + HDOP | `src/gps_quality.h`, applied in `ServiceGps()`/`ApplyGpsFix()` |
+| Rejecting a fix that fights the filter (multipath) | `GpsPositionNis()` in `src/nav_filter.h`, gated in `ApplyGpsFix()` |
 | Magnetometer hard/soft-iron calibration | `src/mag_cal.h`, driven from `src/imu.cpp` |
 | Barometer fusion, and why it has its own state | `kBaroBias` in `src/nav_filter.h`, `ServiceBaro()` in `src/estimator.cpp` |
 | LDO2 / power-cycle recovery / sleep latch | `src/board_power.{h,cpp}` |
+| Dashboard GPS + baro power button | `ServiceAuxPower()` in `src/estimator.cpp`, `HandleAuxPowerCommand()` in `src/web_server.cpp`, `btn-aux` in `web/index.html` |
+| The FFT itself (window, scaling, bins) | `src/spectrum.h` |
+| Spectrum panel: ring buffer, cadence, source | `src/vibration.{h,cpp}`, `sec-spec` in `web/index.html` |
 | BOOT button, deep sleep | `src/button.{h,cpp}`, `HandleButton()` in `src/main.cpp` |
 | Dashboard panels and plotting | `web/index.html` (gzipped into flash by `scripts/embed_web.py`) |
 
@@ -114,7 +143,12 @@ Everything that can be tested without hardware, is:
 - `test/test_nav/` — the EKF and the geodetic projection. `nav_filter.h`, `geo.h`
   and `attitude.h` are header-only and Arduino-free specifically so they can be.
 - `test/test_telemetry/` — the frame encoder, built from the same `telemetry.cpp`
-  the firmware ships.
+  the firmware ships. Covers both message types: the telemetry frame and the
+  spectrum frame.
+- `test/test_spectrum/` — the FFT, against synthetic tones. A scaling slip or an
+  off-by-one in the bit-reversal draws a perfectly plausible plot with every
+  resonance in the wrong place, so this checks amplitudes and the Hann main
+  lobe's 1 : 0.5 shape, not just that something peaked.
 - `task test-ui` — runs the dashboard's real JavaScript against a real frame from
   that encoder, under a stub DOM. This is what catches the firmware and the UI
   drifting apart on a field name.

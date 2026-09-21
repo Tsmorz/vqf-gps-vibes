@@ -67,13 +67,22 @@ struct EstimatorSnapshot {
     float gps_enu[3] = {0, 0, 0};  // the raw fix in the local frame
     bool gps_enu_valid = false;
     uint32_t gps_fix_age_ms = 0;
-    uint32_t gps_update_count = 0;  // measurement updates applied since boot
+    uint32_t gps_update_count = 0;    // measurement updates applied since boot
+    uint32_t gps_rejected_count = 0;  // fixes dropped: stale, poor quality, or gated
+    float gps_sigma_h_m = 0.0f;       // sigma the last accepted fix was applied with
+    uint32_t gps_epoch_tod_ms = 0;    // the receiver's own UTC time of day for the fix
+    bool gps_epoch_valid = false;     // false until a sentence has carried a time
 
     // ── Local frame origin (first fix) ───────────────────────────────────
     bool origin_valid = false;
     double origin_lat = 0.0;
     double origin_lon = 0.0;
     double origin_alt_m = 0.0;
+
+    // ── Auxiliary rail (LDO2: GPS + barometer) ───────────────────────────
+    // False while the rail is deliberately cut from the dashboard. The GPS and
+    // barometer are then absent by choice, not by fault.
+    bool aux_power = true;
 
     // ── Health ───────────────────────────────────────────────────────────
     bool imu_healthy = false;
@@ -104,6 +113,12 @@ void EstimatorSetParams(const FilterParams& params);
 // Clears the navigation state and the local-frame origin, so the next fix
 // re-anchors the plot at the current position.
 void EstimatorResetFilter();
+
+// Cuts or restores power to the GPS and barometer (LDO2), to save battery. Like
+// sleep, this is a request: the estimator task owns the buses, so it applies it
+// on its next tick. Restoring takes ~300 ms for the sensors to boot, after
+// which they reconnect on their own and the GPS starts searching from cold.
+void EstimatorSetAuxPower(bool on);
 
 // Stops the estimator and powers the IMU down ahead of deep sleep. The I2C
 // buses belong to the estimator task, so the request is handed to it and this

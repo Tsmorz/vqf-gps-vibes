@@ -47,6 +47,11 @@ class NavFilter {
     // acceleration, and the envelope should say so.
     static constexpr float kCoastingNoiseFactor = 10.0f;
 
+    // Prior variance on each accelerometer bias axis, (0.2 m/s^2)^2 -- a
+    // typical LSM6DSOX offset. Shared by Reset() and ForgetAccelBias() so the
+    // two cannot drift apart.
+    static constexpr float kAccelBiasPriorVar = 0.04f;
+
     // Indices into the state vector, also used to address a scalar update.
     enum StateIndex {
         kPosEast = 0,
@@ -87,12 +92,36 @@ class NavFilter {
             p_[i][i] = 1.0f;  // (1 m/s)^2
         }
         for (int i = kBiasX; i <= kBiasZ; i++) {
-            p_[i][i] = 0.04f;  // (0.2 m/s^2)^2 -- typical LSM6DSOX offset
+            p_[i][i] = kAccelBiasPriorVar;
         }
         // Unknown until the first barometer reading anchors it, which is why
         // SetBaroBias exists rather than blending the first sample in.
         p_[kBaroBias][kBaroBias] = 1.0e4f;  // (100 m)^2
         baro_anchored_ = false;
+    }
+
+    // Discards the learned accelerometer bias, restoring the boot prior.
+    //
+    // Called when the accelerometer's full-scale range changes. That state is
+    // absorbing the part's offset and scale error *on the range it was
+    // measured on* -- the config.h note records a +2.74% scale error at 4 g --
+    // and those are properties of the analog path the range selects. Carried
+    // across a range change it describes a signal path that no longer exists,
+    // and every propagation would inherit the step.
+    //
+    // Position and velocity are deliberately left alone: they are still valid,
+    // and resetting them would throw away a good fix to no purpose. The
+    // cross-covariance rows are cleared because they relate the old bias to
+    // those states, and that relationship is what has just stopped holding.
+    void ForgetAccelBias() {
+        for (int i = kBiasX; i <= kBiasZ; i++) {
+            x_[i] = 0.0f;
+            for (int j = 0; j < kNumStates; j++) {
+                p_[i][j] = 0.0f;
+                p_[j][i] = 0.0f;
+            }
+            p_[i][i] = kAccelBiasPriorVar;
+        }
     }
 
     // Propagates the state forward by `dt` seconds.
@@ -249,12 +278,64 @@ class NavFilter {
 
     // Snaps position to a fix and shrinks its covariance accordingly. Used for
     // the very first fix, where the ENU origin is defined to be that point and
-    // an incremental update would leave a large spurious innovation behind.
+    // an incremental update would leave a large spurious innovation behind,
+    // and again to re-anchor a filter whose own belief has stopped agreeing
+    // with the receiver.
+    //
+    // Zeroing the row and column is not tidiness, it is the whole correctness
+    // of the operation -- the same reason SetBaroBias does it. The old cross
+    // terms were consistent with the old variance; keeping them next to a much
+    // smaller one leaves P non-positive-definite, which is not a slow decay but
+    // an immediate fault. Free-running for 60 s with no zero-velocity updates
+    // -- an ordinary moving cold start -- builds a pos/vel correlation of 0.996,
+    // and snapping under that used to leave an implied correlation of 72. The
+    // very next update, the same fix's own ground speed, then threw position
+    // 30 m off the fix it had just been snapped to and drove its variance
+    // negative. IsDiverged() only caught it afterwards, because it inspects
+    // diagonals and the 2x2 block was already indefinite.
+    //
+    // Zeroing says what the snap means: position is now known to `sigma`,
+    // independently of anything the filter believed a moment ago.
     void SetPosition(const float pos_enu[3], float sigma) {
         for (int axis = 0; axis < 3; axis++) {
-            x_[kPosEast + axis] = pos_enu[axis];
-            p_[kPosEast + axis][kPosEast + axis] = sigma * sigma;
+            const int index = kPosEast + axis;
+            x_[index] = pos_enu[axis];
+            for (int i = 0; i < kNumStates; i++) {
+                p_[i][index] = 0.0f;
+                p_[index][i] = 0.0f;
+            }
+            p_[index][index] = sigma * sigma;
         }
+    }
+
+    // How far a proposed fix sits from what the filter already believes, in
+    // units of their combined uncertainty: the normalised innovation squared.
+    // Two degrees of freedom, so 13.8 is the 99.9th percentile of chi-square
+    // and anything past it is far more likely to be a bad fix than a surprise.
+    //
+    // This is the check the reported quality cannot make. A multipath fix
+    // arrives with nine satellites and an excellent HDOP -- the receiver is not
+    // lying, its geometry really is good, it is just ranging off a reflection.
+    // Only the filter's own prediction can contradict it.
+    //
+    // Horizontal only, deliberately: multipath displaces a fix sideways, and
+    // height is carried by the barometer, which is trusted an order of
+    // magnitude more than GPS altitude anyway.
+    float GpsPositionNis(const float pos_enu[3], float sigma_h) const {
+        const float r = sigma_h * sigma_h;
+        const float s_ee = p_[kPosEast][kPosEast] + r;
+        const float s_nn = p_[kPosNorth][kPosNorth] + r;
+        const float s_en = p_[kPosEast][kPosNorth];
+        const float determinant = s_ee * s_nn - s_en * s_en;
+        if (!(determinant > 0.0f)) {
+            // A degenerate innovation covariance is the filter's fault, not the
+            // fix's. Returning zero lets the fix through rather than rejecting
+            // every one of them from here on.
+            return 0.0f;
+        }
+        const float d_e = pos_enu[0] - x_[kPosEast];
+        const float d_n = pos_enu[1] - x_[kPosNorth];
+        return (s_nn * d_e * d_e - 2.0f * s_en * d_e * d_n + s_ee * d_n * d_n) / determinant;
     }
 
     float state(int index) const {

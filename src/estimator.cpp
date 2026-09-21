@@ -4,12 +4,15 @@
 
 #include "attitude.h"
 #include "baro.h"
+#include "board_power.h"
 #include "config.h"
 #include "geo.h"
 #include "gps.h"
+#include "gps_quality.h"
 #include "i2c_bus.h"
 #include "imu.h"
 #include "nav_filter.h"
+#include "vibration.h"
 #include "vqf.hpp"
 
 namespace {
@@ -26,6 +29,19 @@ FilterParams params;
 EstimatorSnapshot snapshot;
 uint32_t filter_resets = 0;
 uint32_t gps_update_count = 0;
+uint32_t gps_rejected_count = 0;
+// The sigma the last accepted fix was actually applied with, as opposed to the
+// knob it was derived from. Published so the dashboard shows the trust the
+// filter is really using rather than the one the slider claims.
+float gps_applied_sigma_h = 0.0f;
+
+// Whether the filter's position is tied to a fix at all. Distinct from
+// gps_update_count, which is a tally for the dashboard: a filter that has just
+// been reset has applied plenty of fixes historically and is still unanchored.
+// Conflating the two is what let a divergence reset be followed by an
+// incremental update against a filter that had just been zeroed.
+bool position_anchored = false;
+uint32_t gps_consecutive_rejects = 0;
 
 // How long ticks take, as opposed to how often they run. A tick that outlasts
 // its period is the direct evidence that core 1 is saturated (usually by I2C
@@ -89,6 +105,41 @@ void ApplyVqfTuning(const FilterParams& active) {
     }
 }
 
+// Pushes a range change from the dashboard through to the hardware.
+//
+// The web handler cannot do this itself -- only this task may touch the bus --
+// so a change arrives as a new value in FilterParams and is applied on the
+// first tick that sees it. ImuSetRanges() does its own change detection, so
+// calling this every tick costs three integer comparisons.
+void ApplyImuRanges(const FilterParams& active) {
+    const bool accel_range_changed =
+        ImuSetRanges(active.accel_range_g, active.gyro_range_dps, active.mag_range_gauss);
+
+    // Publish what the chips actually ended up on. A request the hardware does
+    // not offer is snapped to the nearest range it does, and the dashboard has
+    // to show the real setting -- otherwise its dropdown sits on a value the
+    // part is not running, and the saturation limits appear to disagree with
+    // the range on screen.
+    int accel_g = 0;
+    int gyro_dps = 0;
+    int mag_gauss = 0;
+    ImuGetRanges(accel_g, gyro_dps, mag_gauss);
+    if (accel_g != active.accel_range_g || gyro_dps != active.gyro_range_dps ||
+        mag_gauss != active.mag_range_gauss) {
+        portENTER_CRITICAL(&state_lock);
+        params.accel_range_g = accel_g;
+        params.gyro_range_dps = gyro_dps;
+        params.mag_range_gauss = mag_gauss;
+        portEXIT_CRITICAL(&state_lock);
+    }
+
+    // Unlike `params`, the filter is this task's alone -- see ResetNavState.
+    if (accel_range_changed) {
+        nav.ForgetAccelBias();
+        Serial.println("[est] accel range changed -- learned accel bias forgotten");
+    }
+}
+
 // Feeds one IMU sample to VQF. With a healthy magnetometer this is the full 9D
 // update; without one, VQF still produces a 6D solution whose roll and pitch
 // are just as good and whose yaw is free to drift.
@@ -104,12 +155,45 @@ void UpdateOrientation(const ImuSample& sample) {
     }
 }
 
+// Returns the navigation state to its boot condition.
+//
+// Shared by the dashboard's reset button and the divergence guard, which used
+// to differ: the guard called nav.Reset() on its own, leaving the filter
+// anchored in its own bookkeeping, so the next fix arrived as an incremental
+// correction to a filter that had just been zeroed. Far from the origin that is
+// an enormous innovation and a long settling transient -- precisely what
+// anchoring exists to avoid.
+//
+// Takes no lock. The estimator task calls this from inside its own tick, where
+// it already has exclusive use of the filter; EstimatorResetFilter wraps it in
+// the critical section instead, because that call arrives from core 0.
+//
+// `keep_frame` retains the ENU origin: after a divergence the dashboard should
+// stay in the frame the user has been watching, whereas the reset button is
+// asking for a fresh one. Either way the filter's position has stopped meaning
+// anything in that frame, so the next fix must re-anchor.
+void ResetNavState(bool keep_frame) {
+    nav.Reset();
+    latest_baro = BaroSample();
+    position_anchored = false;
+    gps_consecutive_rejects = 0;
+    gps_applied_sigma_h = 0.0f;
+    if (!keep_frame) {
+        origin = geo::Origin();
+        gps_update_count = 0;
+        gps_rejected_count = 0;
+    }
+    filter_resets++;
+}
+
 // Applies a GPS fix to the navigation filter.
 //
 // The very first fix defines the local ENU origin and is snapped to rather
 // than blended in: an incremental update from the filter's arbitrary starting
 // point would leave a large innovation and a long settling transient.
-void ApplyGpsFix(const GpsSample& fix, const FilterParams& active) {
+//
+// Returns false if the fix was refused as inconsistent with the filter.
+bool ApplyGpsFix(const GpsSample& fix, const FilterParams& active, float sigma_scale) {
     if (!origin.valid) {
         origin.valid = true;
         origin.lat_deg = fix.lat_deg;
@@ -122,19 +206,51 @@ void ApplyGpsFix(const GpsSample& fix, const FilterParams& active) {
     float fix_enu[3];
     geo::ToEnu(origin, fix.lat_deg, fix.lon_deg, fix.alt_m, fix_enu);
 
-    if (gps_update_count == 0) {
-        nav.SetPosition(fix_enu, active.sigma_gps_pos_h);
+    // The knobs are what a good fix is worth; sigma_scale is how much worse
+    // the receiver says this one is. See gps_quality.h.
+    const float sigma_h = active.sigma_gps_pos_h * sigma_scale;
+    const float sigma_v = active.sigma_gps_pos_v * sigma_scale;
+
+    // Anchoring asserts the position rather than correcting it, so there is no
+    // prior for the fix to disagree with and the gate below cannot apply.
+    bool anchor = !position_anchored;
+
+    if (!anchor) {
+        const float nis = nav.GpsPositionNis(fix_enu, sigma_h);
+        if (nis > GPS_MAX_POSITION_NIS) {
+            if (++gps_consecutive_rejects < GPS_MAX_CONSECUTIVE_REJECTS) {
+                return false;
+            }
+            // Several fixes running cannot all be wrong in the same direction.
+            // What is wrong by then is the filter's own belief -- so stop
+            // arguing with the receiver and re-anchor on it.
+            Serial.printf("[est] %u fixes rejected in a row -- re-anchoring on GPS\n",
+                          gps_consecutive_rejects);
+            anchor = true;
+        }
+    }
+
+    gps_consecutive_rejects = 0;
+    gps_applied_sigma_h = sigma_h;
+
+    if (anchor) {
+        nav.SetPosition(fix_enu, sigma_h);
+        position_anchored = true;
     } else {
-        nav.UpdateGpsPosition(fix_enu, active.sigma_gps_pos_h, active.sigma_gps_pos_v);
+        nav.UpdateGpsPosition(fix_enu, sigma_h, sigma_v);
     }
 
     if (active.gps_vel_enabled) {
         float east_mps = 0.0f;
         float north_mps = 0.0f;
         geo::CourseToEnuVelocity(fix.speed_mps, fix.course_deg, east_mps, north_mps);
-        nav.UpdateGpsVelocity(east_mps, north_mps, active.sigma_gps_vel);
+        // Scaled by the same factor: speed and course come out of the same
+        // least-squares solution at the same epoch, so the geometry that
+        // degraded the position degraded these too.
+        nav.UpdateGpsVelocity(east_mps, north_mps, active.sigma_gps_vel * sigma_scale);
     }
     gps_update_count++;
+    return true;
 }
 
 // Reads the barometer and folds it into the filter.
@@ -192,9 +308,92 @@ void ServiceGps(const FilterParams& active) {
     GpsPoll();
 
     GpsSample fix;
-    if (GpsConsumeNewFix(fix)) {
-        ApplyGpsFix(fix, active);
+    if (!GpsConsumeNewFix(fix)) {
+        return;
     }
+
+    // With GPS fusion switched off the fix is drained and dropped here.
+    //
+    // It is deliberately not counted as a rejection -- nothing is wrong with
+    // it -- and the poll above deliberately still runs: GpsLatest() keeps
+    // feeding satellites, HDOP and fix state to the dashboard, so the receiver
+    // still looks alive rather than looking like a hardware fault. Returning
+    // before ApplyGpsFix also leaves the local frame unanchored, which is what
+    // the dashboard reads to know the position panels have no source.
+    if (!active.gps_enabled) {
+        return;
+    }
+
+    // A fix describes where the board was when the receiver solved it, not
+    // where it is now, and it is applied as though it were current. Normally
+    // this tick drains and applies in one go, so the age is a millisecond or
+    // two; it only grows if the estimator falls behind. Past GPS_STALE_MS the
+    // board could have gone anywhere and the fix says more about the past than
+    // the present.
+    //
+    // What this cannot see is the delay inside the receiver and on the wire,
+    // between the epoch the fix describes and the sentence reaching us. That
+    // needs the PA1010D's PPS output wired to an interrupt; until then the
+    // sample carries the receiver's own UTC epoch so the lag is at least
+    // measurable from a recording.
+    if (millis() - fix.fix_millis > GPS_STALE_MS) {
+        gps_rejected_count++;
+        return;
+    }
+
+    // A fix the receiver has described as unusable is dropped here rather than
+    // inside ApplyGpsFix, so that it cannot anchor the local frame either. The
+    // origin is the reference every plotted position is relative to, and the
+    // barometer's anchor waits on it -- neither should be defined by a fix the
+    // receiver itself does not stand behind.
+    const GpsTrust trust = GpsFixTrust(fix.satellites, fix.hdop);
+    if (!trust.accepted) {
+        gps_rejected_count++;
+        return;
+    }
+
+    // Reported quality describes the geometry; this is the fix disagreeing
+    // with the filter's own prediction, which is the only thing that catches
+    // multipath. See NavFilter::GpsPositionNis().
+    if (!ApplyGpsFix(fix, active, trust.sigma_scale)) {
+        gps_rejected_count++;
+    }
+}
+
+// Set by EstimatorSetAuxPower() from core 0, acted on by the estimator task.
+volatile bool aux_power_requested = true;
+bool aux_power = true;
+uint32_t aux_ready_ms = 0;  // when a freshly powered rail has settled; 0 = settled
+
+// Applies a pending change to the LDO2 rail. Never blocks: the sensors' boot
+// time is waited out by holding back the aux drivers, not by delaying the tick
+// that also carries the IMU.
+void ServiceAuxPower() {
+    const bool wanted = aux_power_requested;
+    if (wanted != aux_power) {
+        aux_power = wanted;
+        BoardPowerAuxSet(wanted);
+        if (wanted) {
+            aux_ready_ms = millis() + kAuxRailSettleMs;
+            Serial.println("[pwr] LDO2 on -- GPS and barometer powering up");
+        } else {
+            aux_ready_ms = 0;
+            Serial.println("[pwr] LDO2 off -- GPS and barometer unpowered");
+        }
+    }
+    if (aux_ready_ms != 0 && static_cast<int32_t>(millis() - aux_ready_ms) >= 0) {
+        aux_ready_ms = 0;
+        // The drivers' handles predate the power cut. Bumping the generation
+        // makes both re-initialise, and restarting the transfer clock stops the
+        // watchdog reading the silent off period as a dead bus and power-cycling.
+        I2cRestart(I2cBus::kAux);
+        I2cNoteTransferOk(I2cBus::kAux);
+    }
+}
+
+// True when the GPS and barometer may be talked to.
+bool AuxUsable() {
+    return aux_power && aux_ready_ms == 0;
 }
 
 // Copies the current state into the published snapshot.
@@ -233,7 +432,7 @@ void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz
     next.mag_field_ut = mag_status.field_ut;
 
     const GpsSample fix = GpsLatest();
-    next.gps_fix = fix.has_fix;
+    next.gps_fix = aux_power && fix.has_fix;
     next.gps_satellites = fix.satellites;
     next.gps_hdop = fix.hdop;
     next.gps_lat = fix.lat_deg;
@@ -241,6 +440,10 @@ void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz
     next.gps_alt_m = fix.alt_m;
     next.gps_fix_age_ms = fix.fix_millis == 0 ? 0 : next.timestamp_ms - fix.fix_millis;
     next.gps_update_count = gps_update_count;
+    next.gps_rejected_count = gps_rejected_count;
+    next.gps_sigma_h_m = gps_applied_sigma_h;
+    next.gps_epoch_tod_ms = fix.epoch_tod_ms;
+    next.gps_epoch_valid = fix.epoch_valid;
     if (fix.has_fix && origin.valid) {
         geo::ToEnu(origin, fix.lat_deg, fix.lon_deg, fix.alt_m, next.gps_enu);
         next.gps_enu_valid = true;
@@ -251,7 +454,8 @@ void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz
     next.origin_lon = origin.lon_deg;
     next.origin_alt_m = origin.alt_m;
 
-    next.baro_healthy = BaroHealthy();
+    next.aux_power = aux_power;
+    next.baro_healthy = aux_power && BaroHealthy();
     next.baro_pressure_pa = latest_baro.pressure_pa;
     next.baro_temperature_c = latest_baro.temperature_c;
     next.baro_altitude_m = latest_baro.pressure_altitude_m;
@@ -262,7 +466,7 @@ void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz
 
     next.imu_healthy = ImuAccelGyroHealthy();
     next.mag_healthy = ImuMagHealthy();
-    next.gps_healthy = GpsHealthy();
+    next.gps_healthy = aux_power && GpsHealthy();
     next.imu_failures = ImuFailureCount();
     next.gps_failures = GpsFailureCount();
     next.filter_resets = filter_resets;
@@ -295,12 +499,27 @@ float MeasureLoopRate() {
 
 // One estimator tick: read the IMU, update orientation, propagate the
 // navigation filter, fold in any measurements, publish.
-void Tick(float dt) {
+//
+// `now_us` is the caller's own micros() reading, passed in rather than taken
+// again here so the spectrum's sample timestamps agree exactly with the dt the
+// filter integrated -- the frequency axis is derived from them.
+void Tick(float dt, uint32_t now_us) {
     const FilterParams active = ReadParams();
     ApplyVqfTuning(active);
 
     ImuSample sample;
     const bool imu_ok = ImuRead(sample);
+
+    // Strictly after ImuRead, which is what services the bus watchdog and
+    // re-initialises the chips after a recovery. Writing a new range before
+    // that runs would push it through a device handle whose bus has already
+    // been torn down -- the ESP_ERR_INVALID_STATE case -- and the Adafruit
+    // driver would report the write as successful.
+    //
+    // It also keeps the sample and the limits it was checked against in step:
+    // `sample` was taken on the old range, so the new full scale must not
+    // apply until the next read.
+    ApplyImuRanges(active);
 
     // Orientation is integrated, so its state means nothing across a gap in
     // the data. Starting VQF over costs a few seconds of re-convergence and
@@ -308,6 +527,17 @@ void Tick(float dt) {
     if (ImuConsumeReconnectEvent()) {
         vqf.resetState();
         Serial.println("[est] IMU back -- orientation filter restarted");
+    }
+
+    // Raw, before VQF or the EKF touch it: the spectrum panel is looking for
+    // what the structure did, not for what the filters made of it. A failed
+    // read restarts the window rather than feeding it the driver's (0, 0, 0) --
+    // that would be a step into silence and would read as broadband content
+    // across the whole band.
+    if (imu_ok) {
+        VibrationPushSample(sample.accel, sample.gyro, now_us);
+    } else {
+        VibrationNoteGap();
     }
 
     float quat[4] = {1, 0, 0, 0};
@@ -348,15 +578,17 @@ void Tick(float dt) {
 
     // GPS first: its first fix defines the local frame and snaps height, and
     // the barometer anchors against that same tick's value.
-    ServiceGps(active);
-    ServiceBaro(active);
+    ServiceAuxPower();
+    if (AuxUsable()) {
+        ServiceGps(active);
+        ServiceBaro(active);
+    }
 
     // Numerical trouble here would publish NaNs to every plot on the
     // dashboard; starting over is both safer and easier to interpret.
     if (nav.IsDiverged()) {
         Serial.println("[est] filter diverged -- resetting");
-        nav.Reset();
-        filter_resets++;
+        ResetNavState(/*keep_frame=*/true);
     }
 
     PublishSnapshot(sample, quat, MeasureLoopRate());
@@ -397,7 +629,7 @@ void EstimatorTask(void* /*argument*/) {
         if (sleep_requested) {
             ParkForSleep();
         }
-        Tick(dt);
+        Tick(dt, now_us);
         RecordTickDuration(micros() - now_us);
         vTaskDelayUntil(&last_wake, period);
     }
@@ -443,13 +675,13 @@ void EstimatorResetFilter() {
     // would corrupt it, so the reset is done inside the same critical section
     // the task uses. Both operations are a few microseconds of memset.
     portENTER_CRITICAL(&state_lock);
-    nav.Reset();
-    origin = geo::Origin();
-    latest_baro = BaroSample();
-    gps_update_count = 0;
-    filter_resets++;
+    ResetNavState(/*keep_frame=*/false);
     portEXIT_CRITICAL(&state_lock);
     Serial.println("[est] filter and local frame reset");
+}
+
+void EstimatorSetAuxPower(bool on) {
+    aux_power_requested = on;
 }
 
 void EstimatorPrepareSleep() {

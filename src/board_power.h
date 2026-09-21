@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 // Control of the FeatherS3's second LDO.
 //
 // The board has two regulators. LDO1 is always on and feeds the ESP32-S3 and
@@ -27,6 +29,14 @@ void BoardPowerBegin();
 // Drops LDO2 briefly and brings it back, then waits for the sensors to boot.
 // Blocks for a few hundred milliseconds. The onboard LED goes dark during it.
 void BoardPowerCycleAux();
+
+// Switches LDO2 without waiting. Off cuts the GPS, barometer and LED; on gives
+// them power but they need kAuxRailSettleMs before they will answer, which is
+// the caller's to wait out (the estimator does, without stalling its tick).
+void BoardPowerAuxSet(bool on);
+
+// How long after BoardPowerAuxSet(true) the sensors take to answer on I2C.
+constexpr uint32_t kAuxRailSettleMs = 300;
 
 // Cuts LDO2 and latches it off through deep sleep, so the GPS, barometer and
 // LED draw nothing. BoardPowerBegin() releases the latch on the next boot.

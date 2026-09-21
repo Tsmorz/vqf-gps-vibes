@@ -17,6 +17,7 @@
 #include "estimator.h"
 #include "imu.h"
 #include "status_led.h"
+#include "vibration.h"
 #include "web_server.h"
 
 namespace {
@@ -36,8 +37,12 @@ SystemStatus EvaluateStatus(const EstimatorSnapshot& snapshot) {
     if (!snapshot.imu_healthy) {
         return SystemStatus::kError;
     }
-    const bool degraded = !snapshot.mag_healthy || !snapshot.gps_healthy || !snapshot.gps_fix ||
-                          !snapshot.baro_healthy || snapshot.estimator_hz < kMinHealthyEstimatorHz;
+    // With the aux rail cut on purpose, an absent GPS and barometer are the
+    // requested state and not a degradation.
+    const bool aux_missing = snapshot.aux_power &&
+                             (!snapshot.gps_healthy || !snapshot.gps_fix || !snapshot.baro_healthy);
+    const bool degraded =
+        !snapshot.mag_healthy || aux_missing || snapshot.estimator_hz < kMinHealthyEstimatorHz;
     return degraded ? SystemStatus::kWarning : SystemStatus::kNormal;
 }
 
@@ -177,7 +182,14 @@ void loop() {
     StatusLedSet(snapshot.mag_collecting ? SystemStatus::kCalibrating : status);
     StatusLedUpdate();
 
+    // Deliberately here and not in the estimator task: the transform is a few
+    // hundred microseconds of arithmetic, which is nothing on core 0 and is
+    // 5-10% of a tick on core 1. Both calls return immediately while the
+    // dashboard's spectrum panel is switched off.
+    VibrationService();
+
     WebServerBroadcast(snapshot, EstimatorGetParams(), StatusName(status));
+    WebServerBroadcastSpectrum();
     LogPeriodically(snapshot);
 
     // Give up the rest of this millisecond. Without it loop() spins at 100% of
