@@ -190,6 +190,13 @@ if (canonical) {
   expect('r-aux', 'on');
   expect('btn-aux', 'Power down GPS + baro');
 
+  // The recorder is mid-stream in the frame, so the button offers to stop it.
+  const rec = JSON.parse(frameJson).rec;
+  expect('r-rec', rec.on ? 'recording' : 'idle');
+  expect('r-rec-n', rec.n.toLocaleString());
+  expect('r-rec-drop', rec.drop.toLocaleString());
+  expect('btn-rec', rec.on ? 'Stop recording' : 'Start recording');
+
   // Range dropdowns seeded from the device rather than left on whichever
   // option the page happened to list first.
   const ranges = JSON.parse(frameJson).params;

@@ -20,7 +20,7 @@ const char* SourceName(SpectrumSource source) {
 
 size_t BuildTelemetryFrame(char* buffer, size_t buffer_size, const EstimatorSnapshot& s,
                            const FilterParams& p, const char* status_name,
-                           const SpectrumConfig& spec) {
+                           const SpectrumConfig& spec, const RecorderStatus& rec) {
     size_t used = 0;
 
     // Appends through a cursor, bailing out the moment the buffer fills. Each
@@ -97,6 +97,12 @@ size_t BuildTelemetryFrame(char* buffer, size_t buffer_size, const EstimatorSnap
         // in the state the device is really in.
         append(snprintf(buffer + used, buffer_size - used, "\"spec\":{\"on\":%d,\"src\":\"%s\"},",
                         spec.enabled ? 1 : 0, SourceName(spec.source))) &&
+
+        // The UDP recorder: whether it is streaming, and how much has gone out
+        // and been lost, so the button and its counters survive a page reload.
+        append(snprintf(buffer + used, buffer_size - used,
+                        "\"rec\":{\"on\":%d,\"pk\":%u,\"n\":%u,\"drop\":%u,\"port\":%u},",
+                        rec.on ? 1 : 0, rec.packets, rec.records, rec.dropped, rec.port)) &&
 
         // The knobs are echoed back so a newly connected browser can populate
         // its sliders from the device rather than from its own defaults.

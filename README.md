@@ -123,6 +123,10 @@ which mode won and the address to open.
 | `task test` | Host unit tests (EKF, geodesy, telemetry encoder) |
 | `task coverage` | Host unit tests instrumented with gcov; HTML report in `.pio/coverage/` (needs `pip install gcovr`) |
 | `task test-ui` | Run the dashboard's JavaScript headlessly against a real frame |
+| `task record` | Receive the board's UDP recording into `recordings/` (see [Recording](#recording)) |
+| `task parse -- FILE [--csv]` | Summarise a recording, optionally export CSV |
+| `task plot -- FILE [--open]` | Interactive Plotly report from a recording |
+| `task test-py` | Recording parser tests, against a packet built by the firmware's own encoder |
 | `task lint` | cppcheck static analysis |
 | `task format` / `format-check` | clang-format (Google style, 4-space indent) |
 | `task ci` | Everything above, in CI order |
@@ -201,6 +205,7 @@ own access point with no internet behind it.
   fixes overlaid.
 - **Velocity vs time** — same, for the velocity states.
 - **Barometer** — fused height against the barometer's own, offset removed.
+- **Record** — streams every 200 Hz tick to your computer over UDP. See below.
 - **Power** — cuts or restores the GPS and barometer's rail (LDO2).
 - **Filter tuning** — the control knobs, below.
 
@@ -219,6 +224,53 @@ Sliders are logarithmic, because these sigmas span orders of magnitude.
 
 Changes take effect on the next filter tick. Nothing is persisted — a reboot
 returns to the defaults in `include/config.h`.
+
+## Recording
+
+The dashboard's 20 Hz telemetry is a decimation for the browser's sake. To keep
+what it cannot show, the **Record** panel streams every 200 Hz estimator tick —
+raw accelerometer, gyroscope and calibrated magnetometer, the VQF quaternion,
+EKF position and velocity, barometer and GPS, plus health flags — to your
+computer over UDP, on either the board's access point or your WiFi.
+
+```sh
+task record                       # on the computer: waits for the board
+# now press "Start recording" on the dashboard
+# ... Ctrl+C on the computer (or "Stop recording") when done
+
+task parse -- recordings/vqf_20260921_143012.vqflog --csv
+task plot  -- recordings/vqf_20260921_143012.vqflog --open
+```
+
+The stream goes to whichever machine pressed the button, so there is nothing to
+configure: on the access point that is the laptop next to it. To watch from a
+phone while a laptop records, type the laptop's address into **send to**. The
+port defaults to 5005 (`task record -- --port N` to change it). Recording keeps
+going if you close the page.
+
+Every `task record` starts a new file named for the moment it began —
+`recordings/vqf_YYYYMMDD_HHMMSS.vqflog` (local time, git-ignored). The file
+holds the datagrams exactly as they arrived, each stamped with the computer's
+clock, so the parser can be improved later without having lost anything. The
+board's own microsecond clock is placed on the wall clock from those stamps
+(using the least-delayed packets, so network latency does not shift the run).
+
+`parse` reports the sample rate actually achieved, packets the network lost
+(from the sequence numbers) and records the board itself dropped, and exports
+every sample as CSV: `unix_time`, `t_s`, then accel, gyro, mag, quaternion,
+roll/pitch/yaw, position, velocity, barometer, GPS, and the health flags.
+`plot` writes a self-contained HTML report — the time series on a shared
+zoomable axis, the track against raw GPS fixes, and a whole-run amplitude
+spectrum (the same scaling as the dashboard's panel). It loads plotly.js from a
+CDN; add `--offline` to embed it (4.5 MB) for use without internet.
+
+Bandwidth is about 25 kB/s. A lost datagram costs ten records rather than
+stalling anything, which is the reason for UDP over the WebSocket.
+
+The tools need [uv](https://docs.astral.sh/uv/) (`brew install uv`); it creates
+the environment from `pyproject.toml` on first use. They log with
+[loguru](https://loguru.readthedocs.io/) and show progress with
+[tqdm](https://tqdm.github.io/); `tools/noise_id.py` uses both too.
 
 ## Spectral analysis
 
@@ -365,6 +417,8 @@ src/
   mag_cal.h           hard/soft-iron fit (pure math, unit tested)
   spectrum.h          Hann-windowed radix-2 FFT (pure math, unit tested)
   vibration.cpp/.h    the spectrum panel's ring buffer and scheduling
+  recorder.cpp/.h     the UDP recorder: ring buffer on core 1, datagrams from loop()
+  record_format.h     the recording's wire format (shared with tools/vqflog.py)
   baro.cpp/.h         BMP390 pressure altitude
   button.cpp/.h       BOOT button: debounce, short/long press, deep-sleep entry
   board_power.cpp/.h  LDO2 control: bring-up, power-cycle, sleep latch
@@ -378,6 +432,11 @@ src/
 web/index.html        the dashboard, gzipped into flash at build time
 tools/i2cscan/        the bring-up probe behind `task scan`
 tools/check_dashboard.mjs   headless harness behind `task test-ui`
+tools/vqf_record.py   receive / parse / plot a recording (`task record|parse|plot`)
+tools/vqflog.py       the recording file format and parser
+tools/vqfplot.py      the Plotly report
+tools/noise_id.py     stationary-run noise identification
+tools/tests/          pytest suite behind `task test-py`
 ```
 
 ### The filter

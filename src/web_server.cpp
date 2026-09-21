@@ -9,6 +9,7 @@
 #include "config.h"
 #include "generated/web_index.h"
 #include "imu.h"
+#include "recorder.h"
 #include "telemetry.h"
 #include "vibration.h"
 #include "wifi_link.h"
@@ -71,6 +72,26 @@ bool ExtractNumber(const char* json, const char* key, float& out) {
         return false;  // the key was present but the value was not a number
     }
     out = parsed;
+    return true;
+}
+
+// Copies a string field into `out`, without quotes or escapes. Only used for an
+// IP address, which has neither.
+bool ExtractString(const char* json, const char* key, char* out, size_t size) {
+    const char* value = FindValue(json, key);
+    if (value == nullptr || *value != '"') {
+        return false;
+    }
+    value++;
+    size_t length = 0;
+    while (value[length] != '"' && value[length] != '\0') {
+        length++;
+    }
+    if (value[length] != '"' || length >= size) {
+        return false;
+    }
+    memcpy(out, value, length);
+    out[length] = '\0';
     return true;
 }
 
@@ -179,6 +200,37 @@ void HandleSpectrumCommand(const char* json) {
     VibrationSetEnabled(wanted);
 }
 
+// Starts or stops the UDP recording. The stream goes to the machine that pressed
+// the button -- its address is the WebSocket's remote end, so there is nothing
+// to configure in either mode: on the board's own access point that is the
+// laptop next to it, on a home network it is wherever the browser is. An
+// explicit "host" overrides that, for watching the dashboard on a phone while a
+// laptop records.
+void HandleRecordCommand(const char* json, uint8_t client) {
+    if (HasStringValue(json, "state", "off")) {
+        RecorderStop();
+        return;
+    }
+    if (!HasStringValue(json, "state", "on")) {
+        return;
+    }
+
+    IPAddress destination = socket_server.remoteIP(client);
+    char host[40];
+    if (ExtractString(json, "host", host, sizeof(host)) && host[0] != '\0' &&
+        !destination.fromString(host)) {
+        Serial.printf("[rec] refusing bad host \"%s\"\n", host);
+        return;
+    }
+    // Unprivileged ports only: a typo should not aim a stream at a service.
+    float port = 0.0f;
+    if (!ExtractNumber(json, "port", port) || port < 1024.0f || port > 65535.0f) {
+        Serial.println("[rec] refusing a port outside 1024..65535");
+        return;
+    }
+    RecorderStart(static_cast<uint32_t>(destination), static_cast<uint16_t>(port));
+}
+
 void OnSocketEvent(uint8_t client, WStype_t type, uint8_t* payload, size_t length) {
     if (type == WStype_CONNECTED) {
         connected_clients++;
@@ -213,6 +265,8 @@ void OnSocketEvent(uint8_t client, WStype_t type, uint8_t* payload, size_t lengt
         HandleAuxPowerCommand(message);
     } else if (HasStringValue(message, "cmd", "spectrum")) {
         HandleSpectrumCommand(message);
+    } else if (HasStringValue(message, "cmd", "record")) {
+        HandleRecordCommand(message, client);
     }
 }
 
@@ -262,7 +316,7 @@ void WebServerBroadcast(const EstimatorSnapshot& snapshot, const FilterParams& p
 
     static char frame[kTelemetryBufferSize];
     const size_t length = BuildTelemetryFrame(frame, sizeof(frame), snapshot, params, status_name,
-                                              VibrationGetConfig());
+                                              VibrationGetConfig(), RecorderGetStatus());
     if (length > 0) {
         socket_server.broadcastTXT(frame, length);
     }

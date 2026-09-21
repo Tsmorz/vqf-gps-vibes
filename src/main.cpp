@@ -16,6 +16,7 @@
 #include "config.h"
 #include "estimator.h"
 #include "imu.h"
+#include "recorder.h"
 #include "status_led.h"
 #include "vibration.h"
 #include "web_server.h"
@@ -187,6 +188,9 @@ void loop() {
     // 5-10% of a tick on core 1. Both calls return immediately while the
     // dashboard's spectrum panel is switched off.
     VibrationService();
+
+    // Sends at most one UDP datagram, and returns at once when not recording.
+    RecorderService();
 
     WebServerBroadcast(snapshot, EstimatorGetParams(), StatusName(status));
     WebServerBroadcastSpectrum();

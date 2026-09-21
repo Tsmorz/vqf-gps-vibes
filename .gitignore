@@ -4,6 +4,10 @@
 src/generated/
 src/secrets.h
 
+# UDP recordings from `task record`, and the tools' virtualenv.
+recordings/
+.venv/
+
 # Python bytecode from the scripts/ and tools/ helpers.
 __pycache__/
 *.pyc

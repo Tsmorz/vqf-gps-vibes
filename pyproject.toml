@@ -1,0 +1,23 @@
+[project]
+name = "vqf-gps-vibes-tools"
+version = "0.1.0"
+description = "Host-side tools for the vqf-gps-vibes firmware: recording, parsing and plotting."
+requires-python = ">=3.10"
+dependencies = [
+    "loguru>=0.7",
+    "numpy>=1.26",
+    "plotly>=5.20",
+    "tqdm>=4.66",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+# Not a package: these are scripts run in place with `uv run`, so there is
+# nothing to build or install.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tools/tests"]
+pythonpath = ["tools"]

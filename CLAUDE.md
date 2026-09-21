@@ -90,6 +90,18 @@ the transform onto core 1 would put a few hundred microseconds of arithmetic
 into a 5000 µs budget that is already mostly I2C waits. The analyser is also
 off by default and returns on a flag check — keep both properties.
 
+**The recording's wire format exists twice, and the copies must agree.**
+`src/record_format.h` and `RECORD_DTYPE` in `tools/vqflog.py` describe the same 120-byte
+record. Change a field in one and a log still parses -- into plausible numbers in the wrong
+columns. `task test-py` feeds the parser a packet the firmware's own encoder built, which is
+what catches it; bump `kVersion` when the layout changes.
+
+**Recording must not put a network call on core 1.** `RecorderPushTick()` is a flag check
+and, while recording, one 120-byte copy under a spinlock. `RecorderService()` does the
+`WiFiUDP` send from `loop()`, one datagram per call. Moving the send into the estimator would
+put an unbounded WiFi stall into the 200 Hz tick. Packets are ten records so they stay under
+one MTU; do not raise that without checking `kMaxPacketBytes`.
+
 **VQF is vendored, not implemented here.** `lib/vqf/` is verbatim from
 <https://github.com/dlaidig/vqf> (MIT). Don't edit it; treat it as a black box
 with the API in `vqf.hpp`.
@@ -125,6 +137,10 @@ tick jitter.
 | Barometer fusion, and why it has its own state | `kBaroBias` in `src/nav_filter.h`, `ServiceBaro()` in `src/estimator.cpp` |
 | LDO2 / power-cycle recovery / sleep latch | `src/board_power.{h,cpp}` |
 | Dashboard GPS + baro power button | `ServiceAuxPower()` in `src/estimator.cpp`, `HandleAuxPowerCommand()` in `src/web_server.cpp`, `btn-aux` in `web/index.html` |
+| UDP recording: ring, batching, send | `src/recorder.{h,cpp}`, `RecorderPushTick()` call in `PublishSnapshot()` |
+| Recording wire format | `src/record_format.h` **and** `RECORD_DTYPE` in `tools/vqflog.py` |
+| Recording start/stop, destination address | `HandleRecordCommand()` in `src/web_server.cpp`, `btn-rec` in `web/index.html` |
+| Receiving, parsing, CSV, Plotly report | `tools/vqf_record.py`, `tools/vqflog.py`, `tools/vqfplot.py` |
 | The FFT itself (window, scaling, bins) | `src/spectrum.h` |
 | Spectrum panel: ring buffer, cadence, source | `src/vibration.{h,cpp}`, `sec-spec` in `web/index.html` |
 | BOOT button, deep sleep | `src/button.{h,cpp}`, `HandleButton()` in `src/main.cpp` |
@@ -133,7 +149,8 @@ tick jitter.
 ## Commands
 
 `task build`, `task flash`, `task monitor`, `task scan`, `task test`,
-`task test-ui`, `task lint`, `task format`, `task ci`, `task erase`.
+`task test-ui`, `task test-py`, `task record`, `task parse`, `task plot`, `task lint`,
+`task format`, `task ci`, `task erase`.
 Run `task ci` before committing.
 
 ## Testing
@@ -153,7 +170,15 @@ Everything that can be tested without hardware, is:
   that encoder, under a stub DOM. This is what catches the firmware and the UI
   drifting apart on a field name.
 
+- `test/test_record/` and `task test-py` — the recording's wire format, and the Python parser
+  against a packet the firmware's own encoder produced.
+
 **If you change the telemetry schema, change both sides and run `task test-ui`.**
+
+Host tools are Python run with `uv run` (`pyproject.toml`). Use `loguru` for messages and
+`tqdm` for anything that loops for more than a moment; log through `tqdm.write` so the two
+do not draw over each other. Not the scripts in `scripts/`: PlatformIO runs those inside its
+own interpreter, where a third-party import would break the build.
 
 **Verify that an edit actually landed.** These files get edited from more than one
 place at once, and a search-and-replace whose anchor has drifted fails silently —

@@ -4,6 +4,7 @@
 
 #include "estimator.h"
 #include "filter_params.h"
+#include "record_format.h"
 #include "vibration.h"
 
 // Encodes one estimator snapshot as the JSON frame the dashboard consumes.
@@ -26,7 +27,8 @@ constexpr size_t kSpectrumBufferSize = 5000;
 // or 0 if the buffer was too small (in which case nothing is sent).
 size_t BuildTelemetryFrame(char* buffer, size_t buffer_size, const EstimatorSnapshot& snapshot,
                            const FilterParams& params, const char* status_name,
-                           const SpectrumConfig& spectrum);
+                           const SpectrumConfig& spectrum,
+                           const RecorderStatus& recorder = RecorderStatus());
 
 // Writes one computed spectrum as its own frame, sent only while the panel is
 // on and only when a new transform has been produced.

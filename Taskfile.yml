@@ -17,11 +17,11 @@ tasks:
     cmds:
       - |
         missing=0
-        for tool in pio clang-format; do
+        for tool in pio clang-format uv; do
           command -v $tool >/dev/null || { echo "MISSING: $tool"; missing=1; }
         done
         if [ $missing = 1 ]; then
-          echo "Install with: pip install platformio && brew install clang-format"
+          echo "Install with: pip install platformio && brew install clang-format uv"
           exit 1
         fi
       - |
@@ -101,6 +101,31 @@ tasks:
       - grep -m1 '^SPECTRUM:' .pio/uicheck/encoder.log | sed 's/^SPECTRUM://' > .pio/uicheck/spectrum.json
       - node tools/check_dashboard.mjs .pio/uicheck/frame.json .pio/uicheck/spectrum.json
 
+  test-py:
+    desc: "Test the recording parser -- against a packet built by the firmware's own encoder"
+    cmds:
+      - mkdir -p .pio/recordcheck
+      - pio test -e native -f test_record -vv > .pio/recordcheck/encoder.log
+      - grep -m1 '^RECORD_PACKET:' .pio/recordcheck/encoder.log | sed 's/^RECORD_PACKET://' > .pio/recordcheck/packet.hex
+      # An empty file would make the cross-language test skip instead of run.
+      - test -s .pio/recordcheck/packet.hex
+      - uv run pytest -q
+
+  record:
+    desc: "Receive the board's UDP recording into recordings/ (then press Start on the dashboard)"
+    cmds:
+      - uv run tools/vqf_record.py listen {{.CLI_ARGS}}
+
+  parse:
+    desc: "Summarise a recording, e.g. `task parse -- recordings/vqf_....vqflog --csv`"
+    cmds:
+      - uv run tools/vqf_record.py parse {{.CLI_ARGS}}
+
+  plot:
+    desc: "Plotly report from a recording, e.g. `task plot -- recordings/vqf_....vqflog --open`"
+    cmds:
+      - uv run tools/vqf_record.py plot {{.CLI_ARGS}}
+
   lint:
     desc: "Static analysis (cppcheck) -- fails on HIGH or MEDIUM findings"
     cmds:
@@ -123,6 +148,7 @@ tasks:
       - task: lint
       - task: test
       - task: test-ui
+      - task: test-py
       - task: build
 
   clean:

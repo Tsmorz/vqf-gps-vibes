@@ -12,6 +12,7 @@
 #include "i2c_bus.h"
 #include "imu.h"
 #include "nav_filter.h"
+#include "recorder.h"
 #include "vibration.h"
 #include "vqf.hpp"
 
@@ -397,7 +398,7 @@ bool AuxUsable() {
 }
 
 // Copies the current state into the published snapshot.
-void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz) {
+void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz, uint32_t now_us) {
     EstimatorSnapshot next;
     next.timestamp_ms = millis();
 
@@ -478,6 +479,11 @@ void PublishSnapshot(const ImuSample& sample, const float quat[4], float loop_hz
     portENTER_CRITICAL(&state_lock);
     snapshot = next;
     portEXIT_CRITICAL(&state_lock);
+
+    // The record is the snapshot just published, stamped with the tick's own
+    // clock reading, so a recording and the dashboard can never disagree about
+    // what a tick contained. Free while not recording: it returns on a flag.
+    RecorderPushTick(next, now_us);
 }
 
 // Measured tick rate, averaged over a second. Shown on the dashboard because a
@@ -591,7 +597,7 @@ void Tick(float dt, uint32_t now_us) {
         ResetNavState(/*keep_frame=*/true);
     }
 
-    PublishSnapshot(sample, quat, MeasureLoopRate());
+    PublishSnapshot(sample, quat, MeasureLoopRate(), now_us);
 }
 
 // Set by EstimatorPrepareSleep() from core 0, acted on by the estimator task,

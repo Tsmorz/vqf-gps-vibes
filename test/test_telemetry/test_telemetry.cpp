@@ -112,6 +112,11 @@ EstimatorSnapshot MakeSnapshot() {
 // source dropdown that has to sync to something other than its default.
 const SpectrumConfig spec = {/*enabled=*/true, SpectrumSource::kGyro};
 
+// Mid-recording, with a few records lost, so the dashboard harness sees the
+// button in its "stop" state and a non-zero loss counter.
+const RecorderStatus recording = {/*on=*/true, /*packets=*/41, /*records=*/410, /*dropped=*/3,
+                                  /*port=*/5005};
+
 // A spectrum with one obvious peak, so a bin that lands in the wrong place is
 // visible in the output rather than hidden in 129 similar numbers.
 SpectrumSnapshot MakeSpectrum() {
@@ -145,7 +150,7 @@ void test_full_frame_encodes_within_the_buffer() {
     const FilterParams params;
 
     const size_t length =
-        BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal", spec);
+        BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal", spec, recording);
 
     TEST_ASSERT_TRUE(length > 0);
     TEST_ASSERT_EQUAL_size_t(strlen(buffer), length);
@@ -237,6 +242,11 @@ void test_frame_contains_every_key_the_dashboard_reads() {
         "\"spec\":",
         "\"on\":",
         "\"src\":",
+        // The UDP recorder's state, which the dashboard's Record panel shows.
+        "\"rec\":",
+        "\"pk\":",
+        "\"drop\":",
+        "\"port\":",
     };
     for (const char* key : required) {
         TEST_ASSERT_NOT_NULL_MESSAGE(strstr(buffer, key), key);
@@ -522,10 +532,26 @@ void test_every_spectrum_truncation_point_fails_safe() {
     TEST_ASSERT_EQUAL_size_t(complete, BuildSpectrumFrame(buffer, complete + 1, reference));
 }
 
+// Both halves of the recorder's echo, exactly as the dashboard reads them.
+void test_recorder_state_is_encoded_as_given() {
+    char buffer[kTelemetryBufferSize];
+    const EstimatorSnapshot snapshot = MakeSnapshot();
+    const FilterParams params;
+    BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal", spec, recording);
+    TEST_ASSERT_NOT_NULL(
+        strstr(buffer, "\"rec\":{\"on\":1,\"pk\":41,\"n\":410,\"drop\":3,\"port\":5005}"));
+
+    // The default is idle, which is what every other call in this file passes.
+    BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal", spec);
+    TEST_ASSERT_NOT_NULL(
+        strstr(buffer, "\"rec\":{\"on\":0,\"pk\":0,\"n\":0,\"drop\":0,\"port\":0}"));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_full_frame_encodes_within_the_buffer);
     RUN_TEST(test_frame_contains_every_key_the_dashboard_reads);
+    RUN_TEST(test_recorder_state_is_encoded_as_given);
     RUN_TEST(test_position_is_encoded_at_full_precision);
     RUN_TEST(test_imu_ranges_are_encoded_as_set);
     RUN_TEST(test_short_buffer_emits_nothing);

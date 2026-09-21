@@ -149,6 +149,10 @@ button.primary:hover{background:linear-gradient(180deg,#31191c,#241619);
 select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
   border:1px solid var(--line);border-radius:9px;padding:7px 11px;
   font:inherit;cursor:pointer}
+.range input[type=text],.range input[type=number]{background:#141a22;color:var(--text);
+  border:1px solid var(--line);border-radius:9px;padding:5px 8px;font:inherit;font-size:12px}
+.range input[type=text]{width:9.5em}
+.range input[type=number]{width:5.5em}
 .note{color:var(--faint);font-size:12px;margin:13px 0 0;line-height:1.55}
 
 /* ── Sweep progress meter ────────────────────────────────────────────── */
@@ -264,6 +268,30 @@ select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
     Calibrate outdoors if you can — indoors, building steel both weakens and
     distorts the field, and no calibration can fix a field that changes as the
     board moves.
+  </p>
+</section>
+
+<section id="sec-rec">
+  <h2>Record <span class="hint" id="h-rec">idle</span></h2>
+  <div class="readout">
+    <div><span>state</span><span id="r-rec">idle</span></div>
+    <div><span>records sent</span><span id="r-rec-n">—</span></div>
+    <div><span>lost on the board</span><span id="r-rec-drop">—</span></div>
+  </div>
+  <div class="row">
+    <button id="btn-rec">Start recording</button>
+    <label class="range"><span>port</span><input type="number" id="in-rec-port" value="5005"
+      min="1024" max="65535"></label>
+    <label class="range"><span>send to</span><input type="text" id="in-rec-host"
+      placeholder="this device"></label>
+  </div>
+  <p class="note">
+    Streams every 200&nbsp;Hz estimator tick &mdash; raw IMU, orientation, position,
+    barometer and GPS &mdash; over UDP to the computer running
+    <code>task record</code>, which writes a date-stamped file. Leave &ldquo;send
+    to&rdquo; blank to record to whatever is showing this page, or give a laptop's
+    address to record there while watching from a phone. Recording carries on if
+    you close this page; stop it here or from the terminal.
   </p>
 </section>
 
@@ -568,6 +596,7 @@ function ingest(f){
   if (!knobsReady && f.params) { seedKnobs(f.params); knobsReady = true; }
   if (f.params) { syncRanges(f.params); applyPanelVisibility(f.params); }
   if (f.spec) applySpectrumState(f.spec);
+  if (f.rec) applyRecordState(f.rec);
   updateChips(f);
 
   if (paused) return;
@@ -582,6 +611,17 @@ function ingest(f){
   });
   const cutoff = f.t/1000 - 180;              // keep the largest window plus slack
   while (history.length && history[0].t < cutoff) history.shift();
+}
+
+// Shows what the board's UDP recorder is doing. The button follows the device,
+// not the last click, so a page opened mid-recording offers to stop it.
+function applyRecordState(r){
+  $('r-rec').textContent = r.on ? 'recording' : 'idle';
+  $('h-rec').textContent = r.on ? 'recording · port ' + r.port : 'idle';
+  $('r-rec-n').textContent = r.on || r.n ? r.n.toLocaleString() : '—';
+  $('r-rec-drop').textContent = r.on || r.n ? r.drop.toLocaleString() : '—';
+  $('btn-rec').textContent = r.on ? 'Stop recording' : 'Start recording';
+  $('btn-rec').className = r.on ? 'primary' : '';  // red while it is live
 }
 
 // Folds one spectrum into the live trace and the peak hold.
@@ -1355,6 +1395,11 @@ function bindControls(){
   $('btn-aux').addEventListener('click', () => {
     const on = latest && latest.health && latest.health.aux;
     send({cmd:'auxpower', state: on ? 'off' : 'on'});
+  });
+  $('btn-rec').addEventListener('click', () => {
+    if (latest && latest.rec && latest.rec.on) { send({cmd:'record', state:'off'}); return; }
+    send({cmd:'record', state:'on', port: +$('in-rec-port').value,
+          host: $('in-rec-host').value.trim()});
   });
   $('btn-magclear').addEventListener('click', () => send({cmd:'magcal', action:'clear'}));
 
