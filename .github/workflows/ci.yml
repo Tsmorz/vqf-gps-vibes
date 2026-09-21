@@ -47,6 +47,9 @@ jobs:
   test:
     name: Unit tests + coverage
     runs-on: ubuntu-latest
+    # Only this job writes, and only to commit the generated badge.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/setup-task@v2
@@ -54,7 +57,8 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.github/actions/setup-pio
       - run: pip install gcovr
-      # Runs the same unit tests as `task test`, instrumented, then gates on 90% lines.
+      # Runs the same unit tests as `task test`, instrumented, then gates on
+      # 95% lines / 90% branches. `task coverage` also renders the README badge.
       - run: task coverage
       - name: Coverage summary
         if: always()
@@ -67,6 +71,18 @@ jobs:
           name: coverage
           path: .pio/coverage/
           if-no-files-found: warn
+      # The badge is generated, not hand-maintained, so it is committed back
+      # whenever the percentage actually moves. Only on main: a pull request
+      # from a fork cannot write here, and its number is not the one to show.
+      - name: Commit the coverage badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/badges/coverage.svg
+          git diff --cached --quiet && exit 0
+          git commit -m 'Update the coverage badge [skip ci]'
+          git push
 
   test-ui:
     name: Dashboard JS check

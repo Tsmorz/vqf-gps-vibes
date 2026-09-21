@@ -34,6 +34,8 @@ Pattern PatternFor(SystemStatus status) {
             return {255, 140, 0, 900, false};
         case SystemStatus::kError:
             return {255, 0, 0, 250, false};
+        case SystemStatus::kCalibrating:
+            return {255, 0, 200, 500, true};
         case SystemStatus::kInitialising:
         default:
             return {0, 40, 255, 600, true};
@@ -70,6 +72,11 @@ void StatusLedBegin() {
 
 void StatusLedSet(SystemStatus status) {
     current = status;
+}
+
+void StatusLedOff() {
+    pixel.clear();
+    pixel.show();
 }
 
 SystemStatus StatusLedCurrent() {

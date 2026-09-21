@@ -362,6 +362,20 @@ void Tick(float dt) {
     PublishSnapshot(sample, quat, MeasureLoopRate());
 }
 
+// Set by EstimatorPrepareSleep() from core 0, acted on by the estimator task,
+// which alone may touch the buses.
+volatile bool sleep_requested = false;
+volatile bool sleep_ready = false;
+
+// Powers the sensors down, then parks the task so nothing wakes them again.
+[[noreturn]] void ParkForSleep() {
+    ImuPowerDown();
+    sleep_ready = true;
+    for (;;) {
+        vTaskDelay(portMAX_DELAY);
+    }
+}
+
 void EstimatorTask(void* /*argument*/) {
     // Bring the bus up from here rather than from setup(). The I2C driver
     // allocates its interrupt on whichever core installs it, and setup() runs
@@ -380,6 +394,9 @@ void EstimatorTask(void* /*argument*/) {
         const float dt = (now_us - last_tick_us) * 1e-6f;
         last_tick_us = now_us;
 
+        if (sleep_requested) {
+            ParkForSleep();
+        }
         Tick(dt);
         RecordTickDuration(micros() - now_us);
         vTaskDelayUntil(&last_wake, period);
@@ -433,4 +450,16 @@ void EstimatorResetFilter() {
     filter_resets++;
     portEXIT_CRITICAL(&state_lock);
     Serial.println("[est] filter and local frame reset");
+}
+
+void EstimatorPrepareSleep() {
+    constexpr uint32_t kTimeoutMs = 500;
+    sleep_requested = true;
+    const uint32_t start_ms = millis();
+    while (!sleep_ready && millis() - start_ms < kTimeoutMs) {
+        delay(1);
+    }
+    if (!sleep_ready) {
+        Serial.println("[est] estimator did not confirm IMU power-down in time; sleeping anyway");
+    }
 }

@@ -3,3 +3,7 @@
 .DS_Store
 src/generated/
 src/secrets.h
+
+# Python bytecode from the scripts/ and tools/ helpers.
+__pycache__/
+*.pyc

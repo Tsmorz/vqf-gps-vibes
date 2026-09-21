@@ -63,6 +63,13 @@ void ImuMagCalClear();
 
 MagCalStatus ImuMagCalStatus();
 
+// Puts both chips into power-down (a few uA instead of continuous sampling).
+// They sit on LDO1, which stays powered through deep sleep, so without this
+// they would keep sampling for the whole sleep. Issues I2C -- call only from
+// the estimator task. A chip that is absent is skipped. The chips are fully
+// reconfigured by ImuBegin() on the next boot, so nothing has to undo this.
+void ImuPowerDown();
+
 // Total read failures since boot -- surfaced on the dashboard as an early
 // warning that a STEMMA cable is intermittent.
 uint32_t ImuFailureCount();

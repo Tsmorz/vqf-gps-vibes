@@ -12,8 +12,10 @@
 #include <Arduino.h>
 
 #include "board_power.h"
+#include "button.h"
 #include "config.h"
 #include "estimator.h"
+#include "imu.h"
 #include "status_led.h"
 #include "web_server.h"
 
@@ -48,8 +50,32 @@ const char* StatusName(SystemStatus status) {
         case SystemStatus::kError:
             return "error";
         case SystemStatus::kInitialising:
+        case SystemStatus::kCalibrating:
+            return "calibrating";
         default:
             return "init";
+    }
+}
+
+// Short press toggles a magnetometer sweep, long press sleeps. The sweep is
+// finished by the same button that started it, so it can be done one-handed
+// while the other hand turns the board.
+void HandleButton(const EstimatorSnapshot& snapshot) {
+    switch (ButtonPoll()) {
+        case ButtonEvent::kShortPress:
+            if (snapshot.mag_collecting) {
+                ImuMagCalFinish();
+            } else {
+                ImuMagCalStart();
+            }
+            break;
+        case ButtonEvent::kLongPress:
+            Serial.println("[btn] long press -- deep sleep; press BOOT to wake");
+            StatusLedOff();
+            EstimatorPrepareSleep();
+            ButtonSleepUntilPressed();
+        default:
+            break;
     }
 }
 
@@ -126,6 +152,7 @@ void setup() {
     // PA1010D needs time to boot once the rail is up -- so this comes first
     // and deliberately, rather than as a side effect of the LED coming up.
     BoardPowerBegin();
+    ButtonBegin();
 
     StatusLedBegin();
     StatusLedSet(SystemStatus::kInitialising);
@@ -144,8 +171,10 @@ void loop() {
     EstimatorSnapshot snapshot;
     EstimatorCopySnapshot(snapshot);
 
+    HandleButton(snapshot);
+
     const SystemStatus status = EvaluateStatus(snapshot);
-    StatusLedSet(status);
+    StatusLedSet(snapshot.mag_collecting ? SystemStatus::kCalibrating : status);
     StatusLedUpdate();
 
     WebServerBroadcast(snapshot, EstimatorGetParams(), StatusName(status));

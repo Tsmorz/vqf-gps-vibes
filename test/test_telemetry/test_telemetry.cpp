@@ -221,11 +221,109 @@ void test_short_buffer_emits_nothing() {
         0, BuildTelemetryFrame(buffer, sizeof(buffer), snapshot, params, "normal"));
 }
 
+// Every boolean in the frame, in both states.
+//
+// The encoder writes these through `? 1 : 0` ternaries, and a flag dropped
+// from a format string -- or wired to its neighbour -- still encodes cleanly
+// as long as only one state is ever exercised. That is exactly how
+// `baro_enabled` once went missing from the params block while the test that
+// should have caught it had lost its assertion. Checking both states of every
+// flag is what closes that gap.
+void test_every_boolean_encodes_in_both_states() {
+    char buffer[kTelemetryBufferSize];
+
+    EstimatorSnapshot set = MakeSnapshot();
+    set.rest_detected = true;
+    set.mag_disturbed = true;
+    set.mag_calibrated = true;
+    set.mag_collecting = true;
+    set.baro_healthy = true;
+    set.gps_fix = true;
+    set.gps_enu_valid = true;
+    set.origin_valid = true;
+    set.imu_healthy = true;
+    set.mag_healthy = true;
+    set.gps_healthy = true;
+    FilterParams params_set;
+    params_set.zupt_enabled = true;
+    params_set.gps_vel_enabled = true;
+    params_set.baro_enabled = true;
+
+    TEST_ASSERT_TRUE(BuildTelemetryFrame(buffer, sizeof(buffer), set, params_set, "normal") > 0);
+    const char* when_set[] = {"\"rest\":1",        "\"magdist\":1",      "\"done\":1",
+                              "\"busy\":1",        "\"ok\":1",           "\"fix\":1",
+                              "\"enuok\":1",       "\"imu\":1",          "\"mag\":1",
+                              "\"gps\":1",         "\"zupt_enabled\":1", "\"gps_vel_enabled\":1",
+                              "\"baro_enabled\":1"};
+    for (const char* needle : when_set) {
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(buffer, needle), needle);
+    }
+
+    EstimatorSnapshot clear = MakeSnapshot();
+    clear.rest_detected = false;
+    clear.mag_disturbed = false;
+    clear.mag_calibrated = false;
+    clear.mag_collecting = false;
+    clear.baro_healthy = false;
+    clear.gps_fix = false;
+    clear.gps_enu_valid = false;
+    clear.origin_valid = false;
+    clear.imu_healthy = false;
+    clear.mag_healthy = false;
+    clear.gps_healthy = false;
+    FilterParams params_clear;
+    params_clear.zupt_enabled = false;
+    params_clear.gps_vel_enabled = false;
+    params_clear.baro_enabled = false;
+
+    TEST_ASSERT_TRUE(BuildTelemetryFrame(buffer, sizeof(buffer), clear, params_clear, "error") > 0);
+    const char* when_clear[] = {"\"rest\":0",        "\"magdist\":0",      "\"done\":0",
+                                "\"busy\":0",        "\"ok\":0",           "\"fix\":0",
+                                "\"enuok\":0",       "\"imu\":0",          "\"mag\":0",
+                                "\"gps\":0",         "\"zupt_enabled\":0", "\"gps_vel_enabled\":0",
+                                "\"baro_enabled\":0"};
+    for (const char* needle : when_clear) {
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(buffer, needle), needle);
+    }
+}
+
+// The encoder stops at whichever field overruns the buffer, and there is a
+// separate early exit for every one of them -- a long `&&` chain, of which
+// only the first link is exercised by a buffer that is obviously too small.
+// Sweeping every size walks the failure through all of them. The contract at
+// each: either nothing at all, or the complete frame, never a prefix of it.
+void test_every_truncation_point_fails_safe() {
+    const EstimatorSnapshot snapshot = MakeSnapshot();
+    const FilterParams params;
+
+    char full[kTelemetryBufferSize];
+    const size_t complete = BuildTelemetryFrame(full, sizeof(full), snapshot, params, "normal");
+    TEST_ASSERT_TRUE(complete > 0);
+
+    char buffer[kTelemetryBufferSize];
+    for (size_t size = 1; size <= complete + 1; size++) {
+        memset(buffer, 0x7f, sizeof(buffer));
+        const size_t used = BuildTelemetryFrame(buffer, size, snapshot, params, "normal");
+        if (used == 0) {
+            continue;
+        }
+        TEST_ASSERT_EQUAL_size_t(complete, used);
+        TEST_ASSERT_EQUAL_STRING(full, buffer);
+    }
+
+    // The smallest buffer that can hold the frame does produce it, so the
+    // sweep above is not simply refusing every size.
+    TEST_ASSERT_EQUAL_size_t(complete,
+                             BuildTelemetryFrame(buffer, complete + 1, snapshot, params, "normal"));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_full_frame_encodes_within_the_buffer);
     RUN_TEST(test_frame_contains_every_key_the_dashboard_reads);
     RUN_TEST(test_position_is_encoded_at_full_precision);
     RUN_TEST(test_short_buffer_emits_nothing);
+    RUN_TEST(test_every_boolean_encodes_in_both_states);
+    RUN_TEST(test_every_truncation_point_fails_safe);
     return UNITY_END();
 }

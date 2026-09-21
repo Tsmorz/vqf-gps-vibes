@@ -389,6 +389,17 @@ uint32_t ImuFailureCount() {
     return accel_gyro.total_failures + magnetometer.total_failures;
 }
 
+void ImuPowerDown() {
+    if (accel_gyro.healthy) {
+        lsm.setAccelDataRate(LSM6DS_RATE_SHUTDOWN);
+        lsm.setGyroDataRate(LSM6DS_RATE_SHUTDOWN);
+    }
+    if (magnetometer.healthy) {
+        lis.setOperationMode(LIS3MDL_POWERDOWNMODE);
+    }
+    Serial.println("[imu] accel/gyro and magnetometer powered down");
+}
+
 void ImuMagCalStart() {
     portENTER_CRITICAL(&mag_lock);
     mag_collector.Reset();

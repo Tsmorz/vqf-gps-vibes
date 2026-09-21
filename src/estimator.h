@@ -104,3 +104,9 @@ void EstimatorSetParams(const FilterParams& params);
 // Clears the navigation state and the local-frame origin, so the next fix
 // re-anchors the plot at the current position.
 void EstimatorResetFilter();
+
+// Stops the estimator and powers the IMU down ahead of deep sleep. The I2C
+// buses belong to the estimator task, so the request is handed to it and this
+// waits for it to finish (bounded, so a wedged bus cannot block sleeping).
+// The estimator does not resume; the board is expected to sleep next.
+void EstimatorPrepareSleep();

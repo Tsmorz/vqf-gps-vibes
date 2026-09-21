@@ -162,6 +162,39 @@ void test_progress_tracks_the_sweep() {
     TEST_ASSERT_EQUAL_INT(0, collector.sample_count());
 }
 
+// A sweep can clear the field-strength floor on every axis and still be a bad
+// fit. Rotating much further about one axis than the others leaves the
+// ellipsoid half observed, and that is caught on isotropy rather than on the
+// floor -- a separate rejection, reached only once all three axes are past it.
+void test_lopsided_sweep_is_refused_although_every_axis_clears_the_floor() {
+    MagCalCollector collector;
+    // Spans of 120, 120 and 60 uT. All three are past the 50 uT floor, but the
+    // worst is half the best, under the 0.75 ratio a usable fit needs.
+    const float low[3] = {-60.0f, -60.0f, -30.0f};
+    const float high[3] = {60.0f, 60.0f, 30.0f};
+    collector.Add(low);
+    collector.Add(high);
+
+    MagCalibration fit;
+    TEST_ASSERT_FALSE(collector.Solve(fit));
+    TEST_ASSERT_FALSE(fit.valid);
+    TEST_ASSERT_TRUE(collector.progress() < 1.0f);
+
+    // Widen it until every axis is comfortably past the floor -- spans of 200,
+    // 200 and 110 uT -- and it is the isotropy term, not the floor, that now
+    // holds progress back. Progress reports the lower of the two, so this is
+    // the case where the honest answer comes from coverage rather than reach.
+    MagCalCollector wide;
+    const float wide_low[3] = {-100.0f, -100.0f, -55.0f};
+    const float wide_high[3] = {100.0f, 100.0f, 55.0f};
+    wide.Add(wide_low);
+    wide.Add(wide_high);
+
+    MagCalibration wide_fit;
+    TEST_ASSERT_FALSE(wide.Solve(wide_fit));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.733f, wide.progress());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_uncalibrated_is_a_passthrough);
@@ -171,5 +204,6 @@ int main() {
     RUN_TEST(test_full_sweep_implies_the_true_field);
     RUN_TEST(test_partial_sweep_is_refused_and_reads_low);
     RUN_TEST(test_progress_tracks_the_sweep);
+    RUN_TEST(test_lopsided_sweep_is_refused_although_every_axis_clears_the_floor);
     return UNITY_END();
 }

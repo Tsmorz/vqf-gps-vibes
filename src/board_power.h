@@ -27,3 +27,7 @@ void BoardPowerBegin();
 // Drops LDO2 briefly and brings it back, then waits for the sensors to boot.
 // Blocks for a few hundred milliseconds. The onboard LED goes dark during it.
 void BoardPowerCycleAux();
+
+// Cuts LDO2 and latches it off through deep sleep, so the GPS, barometer and
+// LED draw nothing. BoardPowerBegin() releases the latch on the next boot.
+void BoardPowerSleep();

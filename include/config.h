@@ -87,6 +87,16 @@
 #define RGB_LED_BRIGHTNESS 40  // 0-255; the onboard LED is uncomfortably bright
 #endif
 
+// ── BOOT button ──────────────────────────────────────────────────────────────
+// GPIO 0, active low. It is RTC-capable on the ESP32-S3, which is what lets it
+// wake the board from deep sleep.
+#ifndef BUTTON_PIN
+#define BUTTON_PIN 0
+#endif
+#ifndef BUTTON_LONG_PRESS_MS
+#define BUTTON_LONG_PRESS_MS 1500
+#endif
+
 // ── Timing ───────────────────────────────────────────────────────────────────
 // Estimator tick: IMU read + VQF update + EKF propagate, 200 Hz.
 #ifndef ESTIMATOR_INTERVAL_MS

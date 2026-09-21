@@ -343,6 +343,94 @@ void test_course_maps_to_enu_velocity() {
     TEST_ASSERT_FLOAT_WITHIN(1e-3f, 5.14444f, geo::KnotsToMps(10.0f));
 }
 
+// The coasting path has its own timestep guard, and it is the one that matters
+// most: coasting runs precisely when the IMU has gone, which is also when a
+// stalled task is most likely to hand the filter a nonsense dt.
+void test_coasting_rejects_a_bad_timestep() {
+    NavFilter filter;
+    NavFilter::Params params;
+    filter.Reset();
+    filter.UpdateScalar(NavFilter::kVelEast, 3.0f, 0.01f);
+
+    const float position = filter.state(NavFilter::kPosEast);
+    const float variance = filter.variance(NavFilter::kPosEast);
+    const float bad_steps[] = {0.0f, -0.01f, 0.6f};
+    for (const float dt : bad_steps) {
+        filter.PredictCoasting(dt, params);
+        TEST_ASSERT_EQUAL_FLOAT(position, filter.state(NavFilter::kPosEast));
+        TEST_ASSERT_EQUAL_FLOAT(variance, filter.variance(NavFilter::kPosEast));
+    }
+
+    // A good step still moves it, so the guard is not rejecting everything.
+    filter.PredictCoasting(0.1f, params);
+    TEST_ASSERT_TRUE(filter.state(NavFilter::kPosEast) > position);
+}
+
+// A measurement carrying no information -- an all-zero Jacobian with zero
+// variance -- leaves the innovation covariance at zero. Dividing by it would
+// fill every state with NaN, so the update has to decline instead.
+void test_degenerate_measurement_is_declined() {
+    NavFilter filter;
+    filter.Reset();
+    const float here[3] = {4.0f, -2.0f, 1.0f};
+    filter.SetPosition(here, 2.0f);
+
+    float h[NavFilter::kNumStates] = {};
+    filter.UpdateScalarWithJacobian(h, 5.0f, 0.0f);
+
+    TEST_ASSERT_EQUAL_FLOAT(4.0f, filter.state(NavFilter::kPosEast));
+    TEST_ASSERT_FALSE(filter.IsDiverged());
+}
+
+// The envelope reads zero rather than NaN when a diagonal is not positive.
+// SetPosition with a zero sigma is the ordinary way that happens.
+void test_three_sigma_is_zero_for_a_collapsed_variance() {
+    NavFilter filter;
+    filter.Reset();
+    const float here[3] = {1.0f, 2.0f, 3.0f};
+    filter.SetPosition(here, 0.0f);
+
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, filter.ThreeSigma(NavFilter::kPosEast));
+    TEST_ASSERT_TRUE(filter.ThreeSigma(NavFilter::kVelEast) > 0.0f);
+}
+
+// Divergence is about plausibility, not just NaN -- a runaway state stays
+// perfectly finite all the way out. Each route to it is checked separately.
+void test_divergence_catches_nan_position_and_speed() {
+    NavFilter healthy;
+    healthy.Reset();
+    TEST_ASSERT_FALSE(healthy.IsDiverged());
+
+    NavFilter not_a_number;
+    not_a_number.Reset();
+    not_a_number.UpdateScalar(NavFilter::kPosEast, NAN, 1.0f);
+    TEST_ASSERT_TRUE(not_a_number.IsDiverged());
+
+    NavFilter far_away;
+    far_away.Reset();
+    const float off_the_map[3] = {2.0f * NavFilter::kMaxPlausiblePositionM, 0.0f, 0.0f};
+    far_away.SetPosition(off_the_map, 1.0f);
+    TEST_ASSERT_TRUE(far_away.IsDiverged());
+
+    NavFilter too_fast;
+    too_fast.Reset();
+    too_fast.UpdateScalar(NavFilter::kVelEast, 5.0f * NavFilter::kMaxPlausibleSpeedMps, 0.01f);
+    TEST_ASSERT_TRUE(too_fast.IsDiverged());
+
+    // A non-finite covariance, which is what a NaN tuning knob arriving from
+    // the dashboard would produce: the states stay finite and plausible, and
+    // only the variance gives it away.
+    NavFilter bad_noise;
+    bad_noise.Reset();
+    NavFilter::Params nonsense;
+    nonsense.sigma_accel = NAN;
+    const float identity[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    const float level[3] = {0.0f, 0.0f, NavFilter::kGravityMps2};
+    bad_noise.Predict(level, identity, 0.01f, nonsense);
+    TEST_ASSERT_TRUE(isfinite(bad_noise.state(NavFilter::kPosEast)));
+    TEST_ASSERT_TRUE(bad_noise.IsDiverged());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_reset_is_at_origin_with_positive_covariance);
@@ -362,6 +450,10 @@ int main() {
     RUN_TEST(test_barometer_tightens_the_height_envelope);
     RUN_TEST(test_general_update_matches_single_state_update);
     RUN_TEST(test_bad_timestep_is_rejected);
+    RUN_TEST(test_coasting_rejects_a_bad_timestep);
+    RUN_TEST(test_degenerate_measurement_is_declined);
+    RUN_TEST(test_three_sigma_is_zero_for_a_collapsed_variance);
+    RUN_TEST(test_divergence_catches_nan_position_and_speed);
     RUN_TEST(test_geo_degree_scales_are_physical);
     RUN_TEST(test_geo_projection_is_relative_to_origin);
     RUN_TEST(test_course_maps_to_enu_velocity);

@@ -11,6 +11,7 @@
 //   normal        green   slow breathe   estimator running, sensors healthy
 //   warning       amber   slow blink     degraded -- e.g. no GPS fix, no mag
 //   error         red     fast blink     a required sensor is gone
+//   calibrating   magenta fast pulse     magnetometer sweep in progress (BOOT button)
 //
 // (The FeatherS3's onboard LED is a WS2812B RGB part -- it has no separate
 // white element, so white is produced by driving all three channels.)
@@ -20,12 +21,16 @@ enum class SystemStatus {
     kNormal,
     kWarning,
     kError,
+    kCalibrating,
 };
 
 // Enables the LED's power rail and takes the light to the initialising state.
 void StatusLedBegin();
 
 void StatusLedSet(SystemStatus status);
+
+// Turns the LED dark without touching its power rail (see board_power.h).
+void StatusLedOff();
 
 SystemStatus StatusLedCurrent();
 

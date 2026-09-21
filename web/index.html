@@ -7,85 +7,182 @@
 <style>
 :root{
   color-scheme:dark;
-  --bg:#0b0e14; --panel:#12161d; --well:#0b0e14; --line:#222a35; --line-soft:#1a212b;
-  --text:#e6edf3; --dim:#8b96a5; --faint:#5f6b7a;
-  --x:#ff6b6b; --y:#51cf66; --z:#4dabf7; --accent:#e0a526;
+  /* Surfaces */
+  --bg:#080b11; --panel:#11161e; --panel-top:#151b24; --well:#0b0e14;
+  --line:#232c38; --line-soft:#1a212b; --grid:#161d27; --axis:#2a3340;
+  /* Ink */
+  --text:#e8eef5; --dim:#94a1b1; --faint:#65707f;
+  /* Data colours. Slots 2/3/1 of the dataviz default palette, dark steps,
+     validated as a set against the --well chart surface (all pairs, dark):
+     worst CVD dE 9.4, normal-vision dE 20.9, every slot over 3:1 contrast.
+     X/Y/Z keep the usual warm/green/blue axis reading, but the warm slot is
+     orange rather than red: red against green failed colour-vision
+     separation (dE 3.8 deutan), which made the x and y traces the same
+     line for a deuteranope. Mirrored in `C` in the script -- change both,
+     and re-run the skill's validator rather than picking a hue by eye. */
+  --x:#d95926; --y:#199e70; --z:#3987e5;
+  --est:var(--x); --gps:var(--z); --baro:var(--y);
+  /* Chrome accent. Never a data series. */
+  --accent:#e0a526;
+  /* Status: a reserved scale, always shipped with its text label. */
   --ok:#3fb950; --warn:#d29922; --err:#f85149;
   --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --radius:12px;
+  --radius:14px;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);
-  font:13px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+  font:13px/1.55 var(--sans);-webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility}
+
+/* ── Header ──────────────────────────────────────────────────────────── */
 header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;
-  padding:12px 20px;background:rgba(18,22,29,.85);
-  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  padding:13px 22px;background:rgba(14,18,25,.82);
+  -webkit-backdrop-filter:blur(14px) saturate(140%);
+  backdrop-filter:blur(14px) saturate(140%);
   border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
-h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
+h1{font-size:15px;margin:0;font-weight:640;letter-spacing:.01em;
+  display:flex;align-items:center}
+h1 .mark{width:11px;height:11px;border-radius:3px;margin-right:9px;flex:none;
+  background:linear-gradient(135deg,var(--x),var(--y) 55%,var(--z))}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto}
-.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3.5px 11px;
   border-radius:999px;border:1px solid var(--line);background:var(--well);
-  color:var(--dim);font-size:12px;white-space:nowrap;font-variant-numeric:tabular-nums}
-.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;
-  opacity:.9}
-.chip.ok{color:var(--ok);border-color:#1f4a2c}
-.chip.warn{color:var(--warn);border-color:#5a4513}
-.chip.err{color:var(--err);border-color:#6b2622}
-main{display:grid;gap:16px;padding:16px 20px 32px;max-width:1600px;margin:0 auto;
-  grid-template-columns:repeat(auto-fit,minmax(360px,1fr))}
-section{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-  padding:14px 16px 16px;min-width:0;box-shadow:0 1px 2px rgba(0,0,0,.3)}
-section h2{font-size:11px;margin:0 0 12px;color:var(--dim);font-weight:650;
-  text-transform:uppercase;letter-spacing:.09em;display:flex;align-items:center;gap:8px}
-section h2 .hint{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0;
-  color:var(--faint);font-size:12px}
-canvas{width:100%;display:block;border-radius:8px;touch-action:none;
+  color:var(--dim);font-size:12px;white-space:nowrap;
+  font-variant-numeric:tabular-nums;letter-spacing:.005em}
+.chip::before{content:"";width:6px;height:6px;border-radius:50%;
+  background:currentColor;flex:none;box-shadow:0 0 6px currentColor}
+.chip.ok{color:var(--ok);border-color:#1f4a2c;background:#0d1a12}
+.chip.warn{color:var(--warn);border-color:#5a4513;background:#1a1408}
+.chip.err{color:var(--err);border-color:#6b2622;background:#1c0f0f}
+
+/* ── Layout ──────────────────────────────────────────────────────────── */
+main{display:grid;gap:18px;padding:18px 22px 40px;max-width:1600px;margin:0 auto;
+  grid-template-columns:repeat(auto-fit,minmax(380px,1fr));align-items:start}
+section{background:linear-gradient(180deg,var(--panel-top),var(--panel));
+  border:1px solid var(--line);border-radius:var(--radius);
+  padding:15px 17px 17px;min-width:0;
+  box-shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8)}
+/* The knobs are the one panel with no chart to size it, so it runs the full
+   width and columnises rather than leaving a tall void beside it. */
+section.tuning{grid-column:1/-1}
+#knobs{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));
+  gap:0 24px}
+section h2{font-size:11px;margin:0 0 13px;color:var(--dim);font-weight:650;
+  text-transform:uppercase;letter-spacing:.095em;display:flex;
+  align-items:center;gap:8px}
+section h2 .hint{margin-left:auto;font-weight:400;text-transform:none;
+  letter-spacing:0;color:var(--faint);font-size:12px}
+canvas{width:100%;display:block;border-radius:9px;touch-action:none;
   background:var(--well);border:1px solid var(--line-soft)}
-canvas+canvas{margin-top:6px}
-.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
-  gap:6px;margin-top:12px}
-.readout div{display:flex;flex-direction:column-reverse;gap:1px;
-  background:var(--well);border:1px solid var(--line-soft);border-radius:8px;
-  padding:6px 10px}
+canvas+canvas{margin-top:7px}
+
+/* ── Stat tiles ──────────────────────────────────────────────────────── */
+.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));
+  gap:8px;margin-top:14px}
+.readout div{display:flex;flex-direction:column;gap:3px;min-width:0;
+  background:var(--well);border:1px solid var(--line-soft);border-radius:10px;
+  padding:8px 10px}
 .readout span:first-child{color:var(--faint);font-size:11px}
-.readout span:last-child{font-family:var(--mono);font-size:13px;
-  font-variant-numeric:tabular-nums}
-.legend{display:flex;gap:4px 14px;flex-wrap:wrap;margin-top:10px;color:var(--dim);
-  font-size:12px}
-.legend b{font-weight:700;font-family:var(--mono)}
-.knob{margin:0 0 14px}
-.knob label{display:flex;justify-content:space-between;gap:8px;margin-bottom:4px}
+.readout span:last-child{font-family:var(--mono);font-size:15px;line-height:1.2;
+  font-variant-numeric:tabular-nums;color:var(--text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.readout div.wide{grid-column:span 2}
+
+/* ── Legend ──────────────────────────────────────────────────────────── */
+/* Identity rides a coloured key beside the text, never the text itself:
+   these hues are unreadable as 12px type on the panel. */
+.legend{display:flex;gap:7px 16px;flex-wrap:wrap;margin-top:12px;
+  color:var(--dim);font-size:12px}
+.legend .key{display:inline-flex;align-items:center;gap:7px}
+.legend .key i{width:14px;height:2px;border-radius:1px;flex:none}
+.legend .key i.dot{width:7px;height:7px;border-radius:50%}
+.legend .key i.ring{width:9px;height:9px;border-radius:50%;
+  border:1px solid var(--dim)}
+.legend .key i.band{width:14px;height:9px;border-radius:2px;
+  background:rgba(217,89,38,.22);border:1px solid rgba(217,89,38,.4)}
+.legend .key.muted{color:var(--faint)}
+
+/* ── Controls ────────────────────────────────────────────────────────── */
+.knob{margin:0 0 15px}
+.knob label{display:flex;justify-content:space-between;gap:8px;margin-bottom:5px}
 .knob .name{color:var(--text)}
-.knob .val{color:var(--accent);font-family:var(--mono);font-variant-numeric:tabular-nums}
-.knob .desc{color:var(--faint);font-size:11.5px;margin-top:3px;line-height:1.4}
-input[type=range]{width:100%;accent-color:var(--accent);margin:0}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
-button{background:#1a212b;color:var(--text);border:1px solid var(--line);
-  border-radius:8px;padding:6px 14px;cursor:pointer;font:inherit;
-  transition:background .12s,border-color .12s}
-button:hover{background:#232c38;border-color:#33404f}
+.knob .val{color:var(--accent);font-family:var(--mono);
+  font-variant-numeric:tabular-nums}
+.knob .desc{color:var(--faint);font-size:11.5px;margin-top:4px;line-height:1.45}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;
+  height:18px;background:none;margin:0;cursor:pointer}
+input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:999px;
+  background:#1d2531}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;
+  height:14px;margin-top:-5px;border-radius:50%;background:var(--accent);
+  border:2px solid var(--well);box-shadow:0 1px 3px rgba(0,0,0,.7)}
+input[type=range]::-moz-range-track{height:4px;border-radius:999px;
+  background:#1d2531}
+input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
+  background:var(--accent);border:2px solid var(--well);
+  box-shadow:0 1px 3px rgba(0,0,0,.7)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:13px}
+button{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
+  border:1px solid var(--line);border-radius:9px;padding:7px 15px;
+  cursor:pointer;font:inherit;font-weight:500;
+  transition:background .13s,border-color .13s,transform .06s}
+button:hover{background:linear-gradient(180deg,#252f3c,#1d2530);
+  border-color:#36434f}
 button:active{transform:translateY(1px)}
 button:focus-visible,select:focus-visible,input:focus-visible{
   outline:2px solid var(--z);outline-offset:2px}
-button.primary{border-color:#6b2622;color:#ff9c96}
-button.primary:hover{background:#2a1a1c;border-color:#8b2c26}
-.toggle{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
-.toggle input{accent-color:var(--accent)}
-select{background:#1a212b;color:var(--text);border:1px solid var(--line);
-  border-radius:8px;padding:6px 10px;font:inherit}
-.note{color:var(--faint);font-size:12px;margin:12px 0 0;line-height:1.5}
+button.primary{border-color:#6b2622;color:#ff9c96;
+  background:linear-gradient(180deg,#241619,#1c1215)}
+button.primary:hover{background:linear-gradient(180deg,#31191c,#241619);
+  border-color:#8b2c26}
+.toggle{display:flex;align-items:center;gap:7px;cursor:pointer;
+  user-select:none;-webkit-user-select:none}
+.toggle input{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
+select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
+  border:1px solid var(--line);border-radius:9px;padding:7px 11px;
+  font:inherit;cursor:pointer}
+.note{color:var(--faint);font-size:12px;margin:13px 0 0;line-height:1.55}
+
+/* ── Sweep progress meter ────────────────────────────────────────────── */
+.meter{height:5px;border-radius:999px;background:var(--well);
+  border:1px solid var(--line-soft);overflow:hidden;margin-top:11px}
+.meter i{display:block;height:100%;width:0;border-radius:999px;
+  background:var(--accent);transition:width .2s linear}
+.meter[hidden]{display:none}
+
+/* ── Hover readout ───────────────────────────────────────────────────── */
+/* The crosshair is shared across every time-series chart, so one hover reads
+   the same instant on all of them -- which is how a glitch on one channel is
+   matched against the others. */
+.tip{position:fixed;z-index:30;pointer-events:none;min-width:136px;
+  background:rgba(17,22,30,.97);border:1px solid var(--line);border-radius:10px;
+  padding:9px 11px;box-shadow:0 10px 30px rgba(0,0,0,.55);font-size:12px;
+  -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.tip[hidden]{display:none}
+.tip .when{color:var(--faint);font-size:11px;margin-bottom:6px;
+  font-variant-numeric:tabular-nums}
+.tip .trow{display:flex;align-items:center;gap:9px;line-height:1.75}
+.tip .trow i{width:12px;height:2px;border-radius:1px;flex:none}
+.tip .trow span{color:var(--dim)}
+.tip .trow b{margin-left:auto;font-family:var(--mono);font-weight:600;
+  font-variant-numeric:tabular-nums;color:var(--text)}
+
 @media (max-width:480px){
-  header{padding:10px 12px}
-  main{padding:12px;gap:12px;grid-template-columns:minmax(0,1fr)}
+  header{padding:10px 13px}
+  main{padding:13px;gap:13px;grid-template-columns:minmax(0,1fr)}
   .chips{margin-left:0}
+  section{padding:13px 13px 15px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important;animation:none!important}
 }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>VQF&nbsp;+&nbsp;GPS</h1>
+  <h1><span class="mark"></span>VQF&nbsp;+&nbsp;GPS</h1>
   <div class="chips">
     <span class="chip" id="c-link">connecting</span>
     <span class="chip" id="c-status">—</span>
@@ -102,10 +199,10 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
   <h2>Orientation <span class="hint">drag to orbit</span></h2>
   <canvas id="cv-att" height="300"></canvas>
   <div class="legend">
-    <span style="color:var(--x)"><b>X</b> body fwd</span>
-    <span style="color:var(--y)"><b>Y</b> body left</span>
-    <span style="color:var(--z)"><b>Z</b> body up</span>
-    <span style="color:var(--dim)">grey = ENU world frame</span>
+    <span class="key"><i style="background:var(--x)"></i>X body fwd</span>
+    <span class="key"><i style="background:var(--y)"></i>Y body left</span>
+    <span class="key"><i style="background:var(--z)"></i>Z body up</span>
+    <span class="key muted"><i style="background:var(--axis)"></i>ENU world frame</span>
   </div>
   <div class="readout">
     <div><span>roll</span><span id="r-roll">—</span></div>
@@ -113,7 +210,7 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
     <div><span>yaw</span><span id="r-yaw">—</span></div>
     <div><span>at rest</span><span id="r-rest">—</span></div>
     <div><span>mag dist</span><span id="r-magd">—</span></div>
-    <div><span>gyro bias</span><span id="r-gbias">—</span></div>
+    <div class="wide"><span>gyro bias</span><span id="r-gbias">—</span></div>
   </div>
 </section>
 
@@ -123,10 +220,10 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
   <canvas id="cv-gyr" height="112"></canvas>
   <canvas id="cv-mag" height="112"></canvas>
   <div class="legend">
-    <span style="color:var(--x)"><b>x</b></span>
-    <span style="color:var(--y)"><b>y</b></span>
-    <span style="color:var(--z)"><b>z</b></span>
-    <span style="color:var(--dim)">accel m/s² · gyro rad/s · mag µT</span>
+    <span class="key"><i style="background:var(--x)"></i>x</span>
+    <span class="key"><i style="background:var(--y)"></i>y</span>
+    <span class="key"><i style="background:var(--z)"></i>z</span>
+    <span class="key muted">accel m/s² · gyro rad/s · mag µT</span>
   </div>
   <div class="readout">
     <div><span>|accel|</span><span id="r-anorm">—</span></div>
@@ -137,6 +234,7 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
     <button id="btn-magcal">Calibrate magnetometer</button>
     <button id="btn-magclear">Clear</button>
   </div>
+  <div class="meter" id="magcal-bar" hidden><i id="magcal-fill"></i></div>
   <p class="note" id="magcal-note">
     The magnetometer measures the Earth's field plus the board's own. Until it
     is calibrated that offset distorts the horizontal component heading is
@@ -155,9 +253,9 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
   <h2>Position — local ENU <span class="hint">drag to orbit</span></h2>
   <canvas id="cv-pos3d" height="300"></canvas>
   <div class="legend">
-    <span style="color:var(--accent)"><b>—</b> estimate</span>
-    <span style="color:#4dabf7"><b>·</b> raw GPS fix</span>
-    <span style="color:var(--dim)"><b>◌</b> 3σ ellipsoid</span>
+    <span class="key"><i style="background:var(--est)"></i>estimate</span>
+    <span class="key"><i class="dot" style="background:var(--gps)"></i>raw GPS fix</span>
+    <span class="key"><i class="ring"></i>3σ ellipsoid</span>
   </div>
   <div class="readout">
     <div><span>east</span><span id="r-pe">—</span></div>
@@ -175,9 +273,10 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
   <canvas id="cv-pn" height="112"></canvas>
   <canvas id="cv-pu" height="112"></canvas>
   <div class="legend">
-    <span style="color:var(--accent)"><b>—</b> estimate</span>
-    <span style="color:#4dabf7"><b>·</b> GPS</span>
-    <span style="color:var(--dim)">east · north · up, metres</span>
+    <span class="key"><i style="background:var(--est)"></i>estimate</span>
+    <span class="key"><i class="dot" style="background:var(--gps)"></i>GPS</span>
+    <span class="key"><i class="band"></i>±3σ</span>
+    <span class="key muted">east · north · up, metres</span>
   </div>
 </section>
 
@@ -186,11 +285,16 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
   <canvas id="cv-ve" height="112"></canvas>
   <canvas id="cv-vn" height="112"></canvas>
   <canvas id="cv-vu" height="112"></canvas>
+  <div class="legend">
+    <span class="key"><i style="background:var(--est)"></i>estimate</span>
+    <span class="key"><i class="band"></i>±3σ</span>
+    <span class="key muted">east · north · up, m/s</span>
+  </div>
   <div class="readout">
     <div><span>vE</span><span id="r-ve">—</span></div>
     <div><span>vN</span><span id="r-vn">—</span></div>
     <div><span>vU</span><span id="r-vu">—</span></div>
-    <div><span>accel bias</span><span id="r-ba">—</span></div>
+    <div class="wide"><span>accel bias</span><span id="r-ba">—</span></div>
   </div>
 </section>
 
@@ -198,9 +302,9 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
   <h2>Barometer <span class="hint">height detail, GPS-anchored</span></h2>
   <canvas id="cv-baro" height="150"></canvas>
   <div class="legend">
-    <span style="color:var(--accent)"><b>—</b> fused up</span>
-    <span style="color:#a78bfa"><b>—</b> baro, offset removed</span>
-    <span style="color:#4dabf7"><b>·</b> GPS alt</span>
+    <span class="key"><i style="background:var(--est)"></i>fused up</span>
+    <span class="key"><i style="background:var(--baro)"></i>baro, offset removed</span>
+    <span class="key"><i class="dot" style="background:var(--gps)"></i>GPS alt</span>
   </div>
   <div class="readout">
     <div><span>pressure</span><span id="r-bpa">—</span></div>
@@ -220,7 +324,7 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
   </p>
 </section>
 
-<section>
+<section class="tuning">
   <h2>Filter tuning</h2>
   <div id="knobs"></div>
   <div class="row">
@@ -246,6 +350,8 @@ select{background:#1a212b;color:var(--text);border:1px solid var(--line);
 </section>
 
 </main>
+
+<div class="tip" id="tip" hidden></div>
 
 <script>
 'use strict';
@@ -276,6 +382,20 @@ const KNOBS = [
    about:'VQF time constant for the magnetometer correcting yaw. Higher = more immune to magnetic disturbance, slower to converge.'},
 ];
 
+// Drawing colours, mirroring :root in the stylesheet -- canvas needs literals,
+// so this is the one place they are duplicated. See the note there for why the
+// warm axis slot is orange and not red, and re-run the dataviz validator rather
+// than picking a replacement hue by eye.
+const C = {
+  x:'#d95926', y:'#199e70', z:'#3987e5',
+  est:'#d95926', gps:'#3987e5', baro:'#199e70',
+  surface:'#0b0e14', grid:'#161d27', axis:'#2a3340',
+  ink:'#e8eef5', dim:'#94a1b1', faint:'#65707f',
+};
+
+const rgba = (hex, a) => 'rgba(' + parseInt(hex.slice(1,3),16) + ',' +
+  parseInt(hex.slice(3,5),16) + ',' + parseInt(hex.slice(5,7),16) + ',' + a + ')';
+
 const SLIDER_STEPS = 1000;
 const toSlider = (v, kn) =>
   Math.round(SLIDER_STEPS * (Math.log(v / kn.min) / Math.log(kn.max / kn.min)));
@@ -288,9 +408,22 @@ let paused = false;
 let windowSec = 30;
 let knobsReady = false;      // sliders seeded from the device once
 let dragging = null;
+// One crosshair instant, shared by every time-series chart: hovering the accel
+// trace marks the same moment on gyro, mag, position and velocity, which is how
+// a glitch on one channel gets matched against the others.
+let hover = null;
+// Plot geometry per canvas, recorded at draw time so a pointer position can be
+// turned back into a timestamp without duplicating the scale maths.
+const geom = {};
 const view = {att:{az:-0.6, el:0.35}, pos:{az:-0.6, el:0.35}};
 
 const $ = id => document.getElementById(id);
+
+const MONO = 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+
+// Every chart on the shared time axis -- the crosshair binds to all of them.
+const TIME_SERIES_CANVASES = ['cv-acc','cv-gyr','cv-mag','cv-pe','cv-pn','cv-pu',
+                              'cv-baro','cv-ve','cv-vn','cv-vu'];
 
 // ── WebSocket ──────────────────────────────────────────────────────────────
 let socket = null;
@@ -382,18 +515,19 @@ function niceStep(span){
 // `minSpan` stops the y-axis collapsing onto the noise floor. Without it a
 // gyro resting at 0.002 rad/s gets autoscaled to fill the panel and looks
 // violent, when what is actually on screen is a sensor behaving perfectly.
-function drawSeries(canvas, series, band, label, minSpan){
+function drawSeries(canvas, series, band, label, minSpan, gpsIndex){
   const {ctx, w, h} = prepare(canvas);
-  const pad = {l:44, r:6, t:6, b:14};
+  const pad = {l:44, r:11, t:6, b:14};
   const now = history.length ? history[history.length-1].t : 0;
   const from = now - windowSec;
   const points = history.filter(r => r.t >= from);
 
-  ctx.fillStyle = '#0b0e14';
+  ctx.fillStyle = C.surface;
   ctx.fillRect(0, 0, w, h);
 
   if (points.length < 2){
-    ctx.fillStyle = '#5f6b7a';
+    ctx.fillStyle = C.faint;
+    ctx.font = '11px ' + MONO;
     ctx.fillText('waiting for data…', pad.l, h/2);
     return;
   }
@@ -414,8 +548,8 @@ function drawSeries(canvas, series, band, label, minSpan){
       if (c - e < lo) lo = c - e;
       if (c + e > hi) hi = c + e;
     }
-    if (r.gps && band){
-      const v = r.gps[series[0].index];
+    if (r.gps && gpsIndex != null){
+      const v = r.gps[gpsIndex];
       if (v < lo) lo = v;
       if (v > hi) hi = v;
     }
@@ -433,10 +567,10 @@ function drawSeries(canvas, series, band, label, minSpan){
   const Y = v => pad.t + (hi - v) / (hi - lo) * (h - pad.t - pad.b);
 
   // Gridlines and value labels.
-  ctx.strokeStyle = '#1a212b';
-  ctx.fillStyle = '#5f6b7a';
+  ctx.strokeStyle = C.grid;
+  ctx.fillStyle = C.faint;
   ctx.lineWidth = 1;
-  ctx.font = '10px ui-monospace,Menlo,monospace';
+  ctx.font = '10px ' + MONO;
   const step = niceStep(hi - lo);
   for (let v = Math.ceil(lo/step)*step; v <= hi; v += step){
     const y = Y(v);
@@ -447,7 +581,7 @@ function drawSeries(canvas, series, band, label, minSpan){
   // ±3σ envelope, drawn first so the traces sit on top of it.
   if (band){
     const s = series[0];
-    ctx.fillStyle = 'rgba(210,153,34,0.18)';
+    ctx.fillStyle = rgba(s.color, 0.09);
     ctx.beginPath();
     points.forEach((r, i) => {
       const y = Y(r[s.key][s.index] + r[band][s.index]);
@@ -461,18 +595,24 @@ function drawSeries(canvas, series, band, label, minSpan){
   }
 
   // Raw GPS fixes as dots, so it is obvious when a fix arrives.
-  if (band){
-    ctx.fillStyle = '#4dabf7';
+  if (gpsIndex != null){
+    ctx.fillStyle = C.gps;
+    ctx.strokeStyle = C.surface;
+    ctx.lineWidth = 2;
     for (const r of points){
       if (!r.gps) continue;
       ctx.beginPath();
-      ctx.arc(X(r.t), Y(r.gps[series[0].index]), 1.8, 0, 7);
-      ctx.fill();
+      ctx.arc(X(r.t), Y(r.gps[gpsIndex]), 3, 0, 7);
+      // Ring first, fill over its inner half: a surface-coloured ring separates
+      // the dot from the line it sits on without drawing a border in ink.
+      ctx.stroke(); ctx.fill();
     }
   }
 
   // Traces.
-  ctx.lineWidth = 1.4;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
   for (const s of series){
     ctx.strokeStyle = s.color;
     ctx.beginPath();
@@ -487,10 +627,62 @@ function drawSeries(canvas, series, band, label, minSpan){
     ctx.stroke();
   }
 
-  if (label){
-    ctx.fillStyle = '#8b96a5';
-    ctx.fillText(label, w - pad.r - ctx.measureText(label).width - 2, pad.t + 9);
+  // Endpoint marker -- the current value, which is the one point worth calling
+  // out directly. Ringed for the same reason the GPS dots are.
+  const tail = points[points.length - 1];
+  for (const s of series){
+    const v = tail[s.key]?.[s.index];
+    if (v == null) continue;
+    ctx.fillStyle = s.color;
+    ctx.strokeStyle = C.surface;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(X(tail.t), Y(v), 3.5, 0, 7);
+    ctx.stroke(); ctx.fill();
   }
+
+  if (hover && hover.t >= from && hover.t <= now){
+    const hx = X(hover.t);
+    ctx.strokeStyle = rgba(C.ink, 0.22);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(hx, pad.t); ctx.lineTo(hx, h - pad.b); ctx.stroke();
+    const rec = nearestRecord(hover.t);
+    if (rec){
+      for (const s of series){
+        const v = rec[s.key]?.[s.index];
+        if (v == null) continue;
+        ctx.fillStyle = s.color;
+        ctx.strokeStyle = C.surface;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(X(rec.t), Y(v), 4, 0, 7);
+        ctx.stroke(); ctx.fill();
+      }
+    }
+  }
+
+  // Last, over a patch of surface: the label used to be illegible whenever a
+  // trace or the endpoint marker ran underneath it.
+  if (label){
+    ctx.font = '10px ' + MONO;
+    const tw = ctx.measureText(label).width;
+    const lx = w - pad.r - tw - 2;
+    ctx.fillStyle = C.surface;
+    ctx.fillRect(lx - 4, pad.t - 1, tw + 8, 13);
+    ctx.fillStyle = C.dim;
+    ctx.fillText(label, lx, pad.t + 9);
+  }
+
+  geom[canvas.id] = {from, padl:pad.l, padr:pad.r, w, series, band, label, gpsIndex};
+}
+
+// The record nearest a crosshair instant. Linear over a few hundred points,
+// which is nothing next to the drawing itself.
+function nearestRecord(t){
+  let best = null, bestGap = Infinity;
+  for (const r of history){
+    const gap = Math.abs(r.t - t);
+    if (gap < bestGap){ bestGap = gap; best = r; }
+  }
+  return best;
 }
 
 // ── 3D helpers ─────────────────────────────────────────────────────────────
@@ -529,7 +721,7 @@ function line3d(ctx, cam, a, b, cx, cy, scale, color, width){
 function drawAttitude(){
   const canvas = $('cv-att');
   const {ctx, w, h} = prepare(canvas);
-  ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = C.surface; ctx.fillRect(0, 0, w, h);
   if (!latest) return;
 
   const cx = w/2, cy = h/2, scale = Math.min(w, h) * 0.32;
@@ -539,16 +731,16 @@ function drawAttitude(){
   const worldNames = ['E', 'N', 'U'];
   for (let i = 0; i < 3; i++){
     const axis = [0,0,0]; axis[i] = 1.25;
-    line3d(ctx, cam, [0,0,0], axis, cx, cy, scale, '#2a3340', 1);
+    line3d(ctx, cam, [0,0,0], axis, cx, cy, scale, C.axis, 1);
     const tip = project(axis, cam, cx, cy, scale);
-    ctx.fillStyle = '#5f6b7a';
-    ctx.font = '10px ui-monospace,Menlo,monospace';
+    ctx.fillStyle = C.faint;
+    ctx.font = '10px ' + MONO;
     ctx.fillText(worldNames[i], tip[0] + 3, tip[1]);
   }
 
   // Board body axes, rotated by the VQF quaternion.
   const q = latest.att.q;
-  const colors = ['#ff6b6b', '#51cf66', '#4dabf7'];
+  const colors = [C.x, C.y, C.z];
   const names = ['X', 'Y', 'Z'];
   for (let i = 0; i < 3; i++){
     const unit = [0,0,0]; unit[i] = 1;
@@ -556,17 +748,23 @@ function drawAttitude(){
     line3d(ctx, cam, [0,0,0], rotated, cx, cy, scale, colors[i], 2.4);
     const tip = project(rotated, cam, cx, cy, scale);
     ctx.fillStyle = colors[i];
-    ctx.beginPath(); ctx.arc(tip[0], tip[1], 3, 0, 7); ctx.fill();
-    ctx.font = 'bold 11px ui-monospace,Menlo,monospace';
-    ctx.fillText(names[i], tip[0] + 5, tip[1] - 4);
+    ctx.strokeStyle = C.surface;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(tip[0], tip[1], 4, 0, 7);
+    ctx.stroke(); ctx.fill();
+    // The axis letter is the identity channel here; it stays in ink so it is
+    // readable, with the coloured arrow beside it doing the colour work.
+    ctx.fillStyle = C.ink;
+    ctx.font = 'bold 11px ' + MONO;
+    ctx.fillText(names[i], tip[0] + 7, tip[1] - 5);
   }
 
   // A flat plate through the body x/y axes makes the board's tilt legible in a
   // way three bare lines do not.
   const corners = [[0.7,0.5,0], [-0.7,0.5,0], [-0.7,-0.5,0], [0.7,-0.5,0]]
     .map(c => project(rotate(q, c), cam, cx, cy, scale));
-  ctx.fillStyle = 'rgba(77,171,247,0.13)';
-  ctx.strokeStyle = 'rgba(77,171,247,0.5)';
+  ctx.fillStyle = rgba(C.z, 0.12);
+  ctx.strokeStyle = rgba(C.z, 0.45);
   ctx.lineWidth = 1;
   ctx.beginPath();
   corners.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
@@ -585,7 +783,7 @@ function drawAttitude(){
 function drawPosition3d(){
   const canvas = $('cv-pos3d');
   const {ctx, w, h} = prepare(canvas);
-  ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = C.surface; ctx.fillRect(0, 0, w, h);
   if (!latest) return;
 
   const now = history.length ? history[history.length-1].t : 0;
@@ -608,8 +806,8 @@ function drawPosition3d(){
   const step = niceStep(extent * 2);
   ctx.lineWidth = 1;
   for (let g = -Math.ceil(extent/step)*step; g <= extent; g += step){
-    line3d(ctx, cam, [g,-extent,0], [g,extent,0], cx, cy, scale, '#151b23');
-    line3d(ctx, cam, [-extent,g,0], [extent,g,0], cx, cy, scale, '#151b23');
+    line3d(ctx, cam, [g,-extent,0], [g,extent,0], cx, cy, scale, C.grid);
+    line3d(ctx, cam, [-extent,g,0], [extent,g,0], cx, cy, scale, C.grid);
   }
 
   // Axis-aligned 3σ ellipsoid, drawn as its three principal rings. The filter
@@ -631,8 +829,10 @@ function drawPosition3d(){
   }
 
   // Estimated trajectory.
-  ctx.strokeStyle = '#e0a526';
-  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = C.est;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
   ctx.beginPath();
   points.forEach((r, i) => {
     const pt = project(rel(r.p), cam, cx, cy, scale);
@@ -641,20 +841,26 @@ function drawPosition3d(){
   ctx.stroke();
 
   // Raw fixes.
-  ctx.fillStyle = '#4dabf7';
+  ctx.fillStyle = C.gps;
+  ctx.strokeStyle = C.surface;
+  ctx.lineWidth = 2;
   for (const r of points){
     if (!r.gps) continue;
     const pt = project(rel(r.gps), cam, cx, cy, scale);
-    ctx.beginPath(); ctx.arc(pt[0], pt[1], 2.2, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(pt[0], pt[1], 3, 0, 7);
+    ctx.stroke(); ctx.fill();
   }
 
   // Current estimate.
   const here = project([0,0,0], cam, cx, cy, scale);
-  ctx.fillStyle = '#ffd866';
-  ctx.beginPath(); ctx.arc(here[0], here[1], 4, 0, 7); ctx.fill();
+  ctx.fillStyle = C.est;
+  ctx.strokeStyle = C.surface;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(here[0], here[1], 5, 0, 7);
+  ctx.stroke(); ctx.fill();
 
-  ctx.fillStyle = '#5f6b7a';
-  ctx.font = '10px ui-monospace,Menlo,monospace';
+  ctx.fillStyle = C.faint;
+  ctx.font = '10px ' + MONO;
   ctx.fillText('grid ' + step.toFixed(step < 1 ? 2 : 0) + ' m', 6, h - 6);
 
   const g = latest.gps;
@@ -733,6 +939,26 @@ function bindControls(){
   });
   $('btn-magclear').addEventListener('click', () => send({cmd:'magcal', action:'clear'}));
 
+  // Hover layer on the time-series charts. The charts share one time axis, so
+  // the crosshair is global and every chart redraws it at the same instant.
+  for (const id of TIME_SERIES_CANVASES){
+    const canvas = $(id);
+    canvas.addEventListener('pointermove', e => {
+      const g = geom[id];
+      if (!g){ return; }
+      const box = canvas.getBoundingClientRect();
+      const span = g.w - g.padl - g.padr;
+      const frac = (e.clientX - box.left - g.padl) / span;
+      if (frac < 0 || frac > 1){ hover = null; $('tip').hidden = true; return; }
+      hover = {t: g.from + frac * windowSec};
+      showTip(e.clientX, e.clientY, id);
+    });
+    canvas.addEventListener('pointerleave', () => {
+      hover = null;
+      $('tip').hidden = true;
+    });
+  }
+
   // Drag-to-orbit on both 3D panels.
   for (const [id, cam] of [['cv-att', view.att], ['cv-pos3d', view.pos]]){
     const canvas = $(id);
@@ -750,6 +976,56 @@ function bindControls(){
   }
 }
 
+// Values lead, series names follow: the reader already knows which chart they
+// are on and wants the number. Built with textContent throughout -- never
+// innerHTML -- so a series name can never be read as markup.
+function showTip(clientX, clientY, id){
+  const g = geom[id];
+  const el = $('tip');
+  const rec = hover && nearestRecord(hover.t);
+  if (!g || !rec){ el.hidden = true; return; }
+  while (el.firstChild) el.removeChild(el.firstChild);
+
+  const fmt = v => Math.abs(v) >= 100 ? v.toFixed(1)
+                 : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(3);
+
+  const when = document.createElement('div');
+  when.className = 'when';
+  const newest = history.length ? history[history.length-1].t : rec.t;
+  when.textContent = (g.label ? g.label + '  ·  ' : '') +
+                     (rec.t - newest).toFixed(2) + ' s';
+  el.appendChild(when);
+
+  const addRow = (color, name, text) => {
+    const row = document.createElement('div');
+    row.className = 'trow';
+    const key = document.createElement('i');
+    key.style.background = color;
+    const label = document.createElement('span');
+    label.textContent = name;
+    const value = document.createElement('b');
+    value.textContent = text;
+    row.appendChild(key); row.appendChild(label); row.appendChild(value);
+    el.appendChild(row);
+  };
+
+  for (const sr of g.series){
+    const v = rec[sr.key] ? rec[sr.key][sr.index] : null;
+    if (v == null) continue;
+    const e = g.band && rec[g.band] ? rec[g.band][sr.index] : null;
+    addRow(sr.color, sr.name || sr.key, fmt(v) + (e != null ? ' ±' + fmt(e) : ''));
+  }
+  if (g.gpsIndex != null && rec.gps) addRow(C.gps, 'GPS', fmt(rec.gps[g.gpsIndex]));
+
+  el.hidden = false;
+  // Flip across the pointer near the right/bottom edge so the panel never runs
+  // off screen on a phone.
+  const vw = window.innerWidth || 1024, vh = window.innerHeight || 768;
+  const flipX = clientX > vw - 190, flipY = clientY > vh - 150;
+  el.style.left = (flipX ? clientX - 172 : clientX + 14) + 'px';
+  el.style.top  = (flipY ? clientY - 120 : clientY + 14) + 'px';
+}
+
 // ── Render loop ────────────────────────────────────────────────────────────
 // Everything redraws on animation frames rather than per message, so a burst
 // of telemetry cannot outrun the browser's compositor.
@@ -760,31 +1036,28 @@ function render(){
 
     // Minimum spans are about a tenth of each sensor's working range, so real
     // motion still fills the panel but a resting sensor reads as a flat line.
-    drawSeries($('cv-acc'), [
-      {key:'a', index:0, color:'#ff6b6b'},
-      {key:'a', index:1, color:'#51cf66'},
-      {key:'a', index:2, color:'#4dabf7'}], null, 'accel m/s²', 2.0);
-    drawSeries($('cv-gyr'), [
-      {key:'g', index:0, color:'#ff6b6b'},
-      {key:'g', index:1, color:'#51cf66'},
-      {key:'g', index:2, color:'#4dabf7'}], null, 'gyro rad/s', 0.5);
-    drawSeries($('cv-mag'), [
-      {key:'m', index:0, color:'#ff6b6b'},
-      {key:'m', index:1, color:'#51cf66'},
-      {key:'m', index:2, color:'#4dabf7'}], null, 'mag µT', 20.0);
+    const xyz = key => [
+      {key, index:0, color:C.x, name:'x'},
+      {key, index:1, color:C.y, name:'y'},
+      {key, index:2, color:C.z, name:'z'}];
+    drawSeries($('cv-acc'), xyz('a'), null, 'accel m/s²', 2.0);
+    drawSeries($('cv-gyr'), xyz('g'), null, 'gyro rad/s', 0.5);
+    drawSeries($('cv-mag'), xyz('m'), null, 'mag µT', 20.0);
 
-    drawSeries($('cv-pe'), [{key:'p', index:0, color:'#e0a526'}], 'p3s', 'east');
-    drawSeries($('cv-pn'), [{key:'p', index:1, color:'#e0a526'}], 'p3s', 'north');
-    drawSeries($('cv-pu'), [{key:'p', index:2, color:'#e0a526'}], 'p3s', 'up');
+    const est = (key, index, name) => [{key, index, color:C.est, name}];
+    drawSeries($('cv-pe'), est('p', 0, 'east'),  'p3s', 'east',  null, 0);
+    drawSeries($('cv-pn'), est('p', 1, 'north'), 'p3s', 'north', null, 1);
+    drawSeries($('cv-pu'), est('p', 2, 'up'),    'p3s', 'up',    null, 2);
 
     // Fused height against the barometer's own, so the contribution is visible.
     drawSeries($('cv-baro'), [
-      {key:'p', index:2, color:'#e0a526'},
-      {key:'bh', index:2, color:'#a78bfa'}], 'p3s', 'up (m)', 1.0);
+      {key:'p',  index:2, color:C.est,  name:'fused up'},
+      {key:'bh', index:2, color:C.baro, name:'baro'}], 'p3s', 'up (m)', 1.0, 2);
 
-    drawSeries($('cv-ve'), [{key:'v', index:0, color:'#e0a526'}], 'v3s', 'vE');
-    drawSeries($('cv-vn'), [{key:'v', index:1, color:'#e0a526'}], 'v3s', 'vN');
-    drawSeries($('cv-vu'), [{key:'v', index:2, color:'#e0a526'}], 'v3s', 'vU');
+    // No GPS overlay: the frame carries no GPS velocity, only position.
+    drawSeries($('cv-ve'), est('v', 0, 'vE'), 'v3s', 'vE');
+    drawSeries($('cv-vn'), est('v', 1, 'vN'), 'v3s', 'vN');
+    drawSeries($('cv-vu'), est('v', 2, 'vU'), 'v3s', 'vU');
 
     // |accel| should sit near 9.81 at rest and |mag| near the local field
     // strength (roughly 25-65 µT depending on latitude). Both are shown
@@ -803,6 +1076,8 @@ function render(){
       ? Math.round(cal.prog * 100) + '% — implies ' + cal.implied.toFixed(1) + ' µT, keep turning'
       : (cal.done ? 'calibrated' : 'not calibrated');
     $('btn-magcal').textContent = cal.busy ? 'Finish calibration' : 'Calibrate magnetometer';
+    $('magcal-bar').hidden = !cal.busy;
+    $('magcal-fill').style.width = Math.round(Math.min(1, cal.prog) * 100) + '%';
 
     const nav = latest.nav;
     $('r-ve').textContent = nav.v[0].toFixed(2) + ' ±' + nav.v3s[0].toFixed(2);

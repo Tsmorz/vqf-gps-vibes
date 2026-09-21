@@ -1,6 +1,7 @@
 #include "board_power.h"
 
 #include <Arduino.h>
+#include <driver/gpio.h>
 
 #include "config.h"
 
@@ -17,6 +18,10 @@ constexpr uint32_t kRailOffMs = 200;
 }  // namespace
 
 void BoardPowerBegin() {
+    // After a deep sleep the pin is still latched low; release it first or the
+    // write below is ignored and the aux sensors stay dark.
+    gpio_deep_sleep_hold_dis();
+    gpio_hold_dis(static_cast<gpio_num_t>(LDO2_ENABLE_PIN));
     pinMode(LDO2_ENABLE_PIN, OUTPUT);
     digitalWrite(LDO2_ENABLE_PIN, HIGH);
     delay(kRailSettleMs);
@@ -28,4 +33,10 @@ void BoardPowerCycleAux() {
     delay(kRailOffMs);
     digitalWrite(LDO2_ENABLE_PIN, HIGH);
     delay(kRailSettleMs);
+}
+
+void BoardPowerSleep() {
+    digitalWrite(LDO2_ENABLE_PIN, LOW);
+    gpio_hold_en(static_cast<gpio_num_t>(LDO2_ENABLE_PIN));
+    gpio_deep_sleep_hold_en();
 }

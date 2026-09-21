@@ -54,6 +54,11 @@ on the bench before it was caught. `imu.cpp` probes the chip's I2C address every
 250 ms instead; do not replace that with a check of the driver's return value.
 The GPS has the same probe for the same reason.
 
+**Deep sleep goes through the estimator.** `EstimatorPrepareSleep()` hands the IMU
+power-down to the estimator task, since it owns the buses; do not call
+`ImuPowerDown()` from `loop()`. The LDO2 latch in `BoardPowerSleep()` must be
+released by `BoardPowerBegin()` or the aux sensors stay dark after wake.
+
 **Never let `Serial` block the loop.** `Serial.setTxTimeoutMs(0)` in `setup()`
 is load-bearing, not tidying. The USB-serial `write()` waits up to ~2 s when no
 monitor is draining the port, and `loop()` — which services the web server —
@@ -92,7 +97,8 @@ tick jitter.
 | Behaviour when a sensor drops out | `PredictCoasting()`/`IsDiverged()` in `src/nav_filter.h` |
 | Magnetometer hard/soft-iron calibration | `src/mag_cal.h`, driven from `src/imu.cpp` |
 | Barometer fusion, and why it has its own state | `kBaroBias` in `src/nav_filter.h`, `ServiceBaro()` in `src/estimator.cpp` |
-| LDO2 / power-cycle recovery | `src/board_power.{h,cpp}` |
+| LDO2 / power-cycle recovery / sleep latch | `src/board_power.{h,cpp}` |
+| BOOT button, deep sleep | `src/button.{h,cpp}`, `HandleButton()` in `src/main.cpp` |
 | Dashboard panels and plotting | `web/index.html` (gzipped into flash by `scripts/embed_web.py`) |
 
 ## Commands

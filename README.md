@@ -1,5 +1,8 @@
 # vqf-gps-vibes
 
+[![CI/CD](https://github.com/Tsmorz/vqf-gps-vibes/actions/workflows/ci.yml/badge.svg)](https://github.com/Tsmorz/vqf-gps-vibes/actions/workflows/ci.yml)
+[![coverage](.github/badges/coverage.svg)](https://github.com/Tsmorz/vqf-gps-vibes/actions/workflows/ci.yml)
+
 Real-time orientation and position estimation on an **Unexpected Maker FeatherS3**
 (ESP32-S3), streamed to a browser over the board's own WiFi access point.
 
@@ -51,6 +54,37 @@ same pin, so the onboard LED shares that rail. Two consequences:
 The switchable rail also buys a recovery option the IMU does not have: an aux
 sensor wedged badly enough to ignore its own bus can simply be power-cycled, and
 that is the top of the escalation ladder in `I2cServiceWatchdog()`.
+
+### BOOT button and deep sleep
+
+The FeatherS3's **BOOT** button (GPIO 0) is the board's only physical input:
+
+| Press | Action |
+|---|---|
+| Short | Start a magnetometer sweep; press again to finish it |
+| Long (1.5 s) | Deep sleep. Press BOOT again to wake |
+
+Going to sleep is a three-step handoff, because the I2C buses belong to the
+estimator task: `loop()` asks the estimator to power the IMU down and waits for
+it to confirm (bounded at 500 ms), then cuts LDO2 and enters deep sleep.
+
+- **IMU** — the LSM6DSOX accel/gyro data rates are set to shutdown and the
+  LIS3MDL to power-down. They sit on LDO1, which stays powered, so without this
+  they would sample continuously through the sleep.
+- **GPS, barometer, LED** — LDO2 is driven low and latched off with a GPIO hold
+  that `BoardPowerBegin()` releases on the next boot.
+- **Wake** — GPIO 0 is RTC-capable on the ESP32-S3, so it is armed as an `ext0`
+  wake source (active low, RTC pull-up). The board waits for the button to be
+  released before sleeping, or the low level would end the sleep at once.
+
+Wake is a full reboot: the access point restarts and the VQF/EKF state is lost.
+The magnetometer calibration survives, since it lives in NVS. GPIO 0 is also a
+strapping pin (held low at reset it selects the ROM bootloader); wake-by-button
+is expected to boot normally, but confirm it on your board.
+
+Not done: waking on motion. The LSM6DSOX can raise INT1 on wake-up/activity
+detection, but that pin is not on the STEMMA connector and would need a jumper to
+an RTC-capable GPIO.
 
 ## Quick start
 
@@ -108,7 +142,7 @@ flowchart LR
         direction TB
         format["Format<br/>clang-format"]
         lint["Lint<br/>cppcheck"]
-        test["Unit tests + coverage<br/>gcovr, ≥ 90% lines"]
+        test["Unit tests + coverage<br/>gcovr, ≥ 95% lines / 90% branches"]
         ui["Dashboard JS check<br/>task test-ui"]
         subgraph B["Build matrix"]
             direction TB
@@ -126,7 +160,7 @@ flowchart LR
 |---|---|---|
 | Format | `task format-check` | any source differs from clang-format 21.1.8 output |
 | Lint | `task lint` | cppcheck reports a HIGH or MEDIUM finding |
-| Unit tests + coverage | `task coverage` | a test fails, or line coverage drops below 90% |
+| Unit tests + coverage | `task coverage` | a test fails, or coverage drops below 95% lines / 90% branches |
 | Dashboard JS check | `task test-ui` | the dashboard and the telemetry encoder disagree on a field |
 | Build (`feathers3`, `i2cscan`) | `pio run -e <env>` | either firmware fails to compile |
 | Publish release | attaches `vqf-gps-<tag>.bin` | only runs for a `v*` tag, after every job above passes |
@@ -137,6 +171,17 @@ report is uploaded as the `coverage` artifact. Run `task coverage` to get the sa
 report locally. The figure covers the host-testable code only (the EKF, geodesy,
 magnetometer calibration, sensor limits and telemetry encoder). Code that touches
 Arduino or the I2C bus cannot run on a host, so it is not in the denominator.
+
+It currently stands at **100% of lines and 98.4% of branches**. Three branches
+remain: a negative variance in `IsDiverged()` and an `snprintf` returning a
+negative length in `telemetry.cpp`, neither of which anything can produce
+through the public API, plus one compiler-emitted edge on the progress ternary
+in `mag_cal.h` whose two outcomes the tests do both exercise. They are left
+alone rather than reached through a test-only back door.
+
+The badge above is rendered by `scripts/coverage_badge.py` from the Cobertura
+report, and committed by CI whenever the percentage moves — so it is the real
+number rather than one kept up to date by hand.
 
 To cut a release, tag and push: `git tag v1.0.0 && git push origin v1.0.0`.
 
@@ -184,9 +229,10 @@ confined to heading — measured on the bench, roll and pitch held to 0.01° whi
 yaw wandered 7°, because the horizontal component heading is derived from had
 been squashed from ~21 µT to 7.4 µT.
 
-To calibrate: press **Calibrate magnetometer** on the dashboard, slowly turn the
+To calibrate: press **Calibrate magnetometer** on the dashboard (or short-press
+the **BOOT** button on the board, which is handy untethered), slowly turn the
 board through every orientation including upside down until it reaches 100 %,
-and press **Finish**. The fit is stored in NVS and restored on boot. A sweep that
+and press **Finish** (or BOOT again). The fit is stored in NVS and restored on boot. A sweep that
 only spins about one axis is refused, since it would leave the other two
 uncorrected.
 
@@ -247,6 +293,9 @@ status channel before a browser is attached.
 | Green | slow breathe | Normal — estimator running, all sensors healthy, GPS has a fix |
 | Amber | slow blink | Degraded — no GPS fix or module, magnetometer lost, or the tick rate has sagged |
 | Red | fast blink | Error — the accelerometer/gyroscope is gone, so there is no estimate at all |
+| Magenta | fast pulse | Magnetometer sweep in progress (overrides the above until finished) |
+
+The LED goes dark before deep sleep, using a black pixel rather than GPIO 39.
 
 ## Architecture
 
@@ -265,7 +314,12 @@ src/
   geo.h               lat/lon/alt -> local ENU (pure math, unit tested)
   attitude.h          quaternion -> rotation matrix and Euler angles
   filter_params.h     the runtime-tunable knobs
-  imu.cpp/.h          LSM6DSOX + LIS3MDL, with independent reconnect
+  imu.cpp/.h          LSM6DSOX + LIS3MDL, with reconnect, mag calibration, power-down
+  mag_cal.h           hard/soft-iron fit (pure math, unit tested)
+  baro.cpp/.h         BMP390 pressure altitude
+  button.cpp/.h       BOOT button: debounce, short/long press, deep-sleep entry
+  board_power.cpp/.h  LDO2 control: bring-up, power-cycle, sleep latch
+  status_led.cpp/.h   the RGB status patterns
   gps.cpp/.h          PA1010D, with reconnect and presence detection
   i2c_bus.cpp/.h      shared bus init and stuck-bus recovery
   telemetry.cpp/.h    snapshot -> the JSON frame the dashboard reads
