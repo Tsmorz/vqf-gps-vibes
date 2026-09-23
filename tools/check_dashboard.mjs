@@ -23,8 +23,13 @@ const html = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8')
 const frameJson = readFileSync(process.argv[2], 'utf8').trim();
 const spectrumJson = process.argv[3] ? readFileSync(process.argv[3], 'utf8').trim() : null;
 
-const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
-if (!script) throw new Error('no <script> block found in web/index.html');
+// The page now carries two <script> blocks: a tiny theme-init snippet at the
+// top of <head> (so a stored light/dark choice never flashes the wrong
+// palette) and the real application script at the bottom of <body>. The
+// latter is the one this harness runs; it always opens with 'use strict'.
+const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+const script = scripts.find(s => s.trimStart().startsWith("'use strict'"));
+if (!script) throw new Error('no application <script> block found in web/index.html');
 
 // ── Minimal DOM ────────────────────────────────────────────────────────────
 const elements = new Map();
@@ -50,6 +55,9 @@ function makeElement(id) {
     clientWidth: 400, clientHeight: 300, width: 0, height: 0,
     style: {}, children: [],
     addEventListener(){}, setPointerCapture(){}, removeAttribute(){},
+    setAttribute(name, v){ this['_attr_' + name] = v; },
+    getAttribute(name){ return this['_attr_' + name] ?? null; },
+    dataset: {},
     getContext: () => makeElement._ctx ||= makeContext(),
     appendChild(child){ this.children.push(child); },
     querySelector(){ return makeElement('__query__'); },
@@ -71,6 +79,7 @@ for (const m of html.matchAll(/id="([^"]+)"/g)) {
 }
 
 const document = {
+  documentElement: makeElement('html'),
   getElementById(id) {
     if (!elements.has(id)) { missingIds.push(id); return makeElement(id); }
     return elements.get(id);
@@ -89,6 +98,17 @@ class FakeWebSocket {
   close(){}
 }
 
+// The dark theme's own custom properties, standing in for a real cascade --
+// there is no CSS engine in this sandbox, so getComputedStyle can't resolve
+// :root's declarations itself. Good enough for a smoke test: the page's
+// theme code only needs *some* well-formed value back, never a themed one.
+const rootVars = {
+  '--x': '#d95926', '--y': '#199e70', '--z': '#3987e5',
+  '--est': '#d95926', '--gps': '#3987e5', '--baro': '#199e70',
+  '--well': '#0b0e14', '--grid': '#161d27', '--axis': '#2a3340',
+  '--text': '#e8eef5', '--dim': '#94a1b1', '--faint': '#65707f',
+};
+
 const rafQueue = [];
 const sandbox = {
   document,
@@ -97,6 +117,14 @@ const sandbox = {
   window: {devicePixelRatio: 2},
   requestAnimationFrame: cb => rafQueue.push(cb),
   setTimeout: () => 0,
+  getComputedStyle: () => ({getPropertyValue: name => rootVars[name] ?? ''}),
+  matchMedia: () => ({matches: false, addEventListener(){}, removeEventListener(){}}),
+  localStorage: {
+    _store: new Map(),
+    getItem(k){ return this._store.has(k) ? this._store.get(k) : null; },
+    setItem(k, v){ this._store.set(k, String(v)); },
+    removeItem(k){ this._store.delete(k); },
+  },
   console,
   Math, JSON, isFinite, Infinity,
 };

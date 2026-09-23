@@ -1,15 +1,34 @@
 <!doctype html>
 <html lang="en">
 <head>
+<script>
+// Runs before the stylesheet paints anything, so a stored theme choice never
+// flashes the wrong palette first. Absent a stored choice, the CSS below
+// falls through to the OS's prefers-color-scheme, then to dark.
+(function(){
+  try{
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  } catch(e){}
+})();
+</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>VQF + GPS</title>
 <style>
+/* Dark is the base palette -- unconditional, so a browser with no theme
+   preference and no stored choice gets exactly today's look. Light is an
+   overlay, applied by OS preference (prefers-color-scheme) or by the header
+   toggle (data-theme), whichever the viewer set most recently. Every literal
+   colour used anywhere below is a token here, in both palettes -- so the two
+   modes can never drift apart one rule at a time. */
 :root{
   color-scheme:dark;
   /* Surfaces */
   --bg:#080b11; --panel:#11161e; --panel-top:#151b24; --well:#0b0e14;
   --line:#232c38; --line-soft:#1a212b; --grid:#161d27; --axis:#2a3340;
+  --header-bg:rgba(14,18,25,.82);
+  --shadow-1:rgba(0,0,0,.4); --shadow-2:rgba(0,0,0,.8);
   /* Ink */
   --text:#e8eef5; --dim:#94a1b1; --faint:#65707f;
   /* Data colours. Slots 2/3/1 of the dataviz default palette, dark steps,
@@ -18,17 +37,89 @@
      X/Y/Z keep the usual warm/green/blue axis reading, but the warm slot is
      orange rather than red: red against green failed colour-vision
      separation (dE 3.8 deutan), which made the x and y traces the same
-     line for a deuteranope. Mirrored in `C` in the script -- change both,
-     and re-run the skill's validator rather than picking a hue by eye. */
+     line for a deuteranope. Mirrored in `readThemeColors()` in the script,
+     which reads these custom properties back for canvas drawing rather than
+     duplicating the hex -- so re-running the skill's validator here is the
+     only place a hue ever needs to change. */
   --x:#d95926; --y:#199e70; --z:#3987e5;
   --est:var(--x); --gps:var(--z); --baro:var(--y);
+  --band-fill:rgba(217,89,38,.22); --band-border:rgba(217,89,38,.4);
   /* Chrome accent. Never a data series. */
   --accent:#e0a526;
-  /* Status: a reserved scale, always shipped with its text label. */
-  --ok:#3fb950; --warn:#d29922; --err:#f85149;
+  /* Status: a reserved scale, always shipped with its text label. The wash
+     pair (-bg/-border) is the chip's fill, not the text -- it is themed
+     separately because "near-black behind a dark hue" and "pale tint behind
+     a dark hue" are not the same relationship inverted. */
+  --ok:#3fb950; --ok-bg:#0d1a12; --ok-border:#1f4a2c;
+  --warn:#d29922; --warn-bg:#1a1408; --warn-border:#5a4513;
+  --err:#f85149; --err-bg:#1c0f0f; --err-border:#6b2622;
+  /* Controls */
+  --field-1:#1d2530; --field-2:#171e27;
+  --field-hover-1:#252f3c; --field-hover-2:#1d2530; --field-hover-border:#36434f;
+  --track:#1d2531; --thumb-shadow:rgba(0,0,0,.7);
+  --input-bg:#141a22;
+  --danger-ink:#ff9c96; --danger-1:#241619; --danger-2:#1c1215; --danger-border:#6b2622;
+  --danger-hover-1:#31191c; --danger-hover-2:#241619; --danger-hover-border:#8b2c26;
+  --tip-bg:rgba(17,22,30,.97); --tip-shadow:rgba(0,0,0,.55);
   --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   --radius:14px;
+}
+/* Light steps, not a filter over the dark ones -- a straight invert leaves
+   the dark-tuned hues (chosen to sit at OKLCH L 0.48-0.67 for a black well)
+   too light to read as text on a white one: e.g. --accent #e0a526 measures
+   2.1:1 on the light surface, nowhere near AA. Each hue below was re-stepped
+   for the light surface and, for --x/--y/--z, re-validated with the skill's
+   validator: `node validate_palette.js "#eb6834,#1baf7a,#2a78d6" --mode
+   light --surface "#fcfcfb"` -- CVD dE 9.2, normal-vision dE 24.0, both clear
+   of the floor. --y (#1baf7a) sits under 3:1 line contrast on white, which
+   the validator flags and palette.md documents as expected for this exact
+   aqua step: the mitigation is that every trace already has an always-on
+   stat-tile readout and a legend key, never color-only identity, so the pale
+   line is never the only way to read the value. */
+@media (prefers-color-scheme:light){
+  :root:not([data-theme="dark"]){
+    color-scheme:light;
+    --bg:#f9f9f7; --panel:#fcfcfb; --panel-top:#ffffff; --well:#fcfcfb;
+    --line:#dcdad2; --line-soft:#e8e6de; --grid:#e1e0d9; --axis:#c3c2b7;
+    --header-bg:rgba(249,249,247,.82);
+    --shadow-1:rgba(20,20,15,.06); --shadow-2:rgba(20,20,15,.14);
+    --text:#0b0b0b; --dim:#52514e; --faint:#898781;
+    --x:#eb6834; --y:#1baf7a; --z:#2a78d6;
+    --band-fill:rgba(235,104,52,.16); --band-border:rgba(235,104,52,.4);
+    --accent:#966c12;
+    --ok:#2a8336; --ok-bg:#e7f8ea; --ok-border:#aee0b4;
+    --warn:#946b14; --warn-bg:#f8f3e7; --warn-border:#e0d0ae;
+    --err:#c81e12; --err-bg:#f8e8e7; --err-border:#e0b0ae;
+    --field-1:#ffffff; --field-2:#f3f2ef;
+    --field-hover-1:#f7f6f2; --field-hover-2:#efeeea; --field-hover-border:#c7c5bb;
+    --track:#e5e3da; --thumb-shadow:rgba(20,20,15,.25);
+    --input-bg:#f3f2ef;
+    --danger-ink:#c81e12; --danger-1:#fdecea; --danger-2:#fbe0dd; --danger-border:#e3b4b0;
+    --danger-hover-1:#fbdedb; --danger-hover-2:#f8d2ce; --danger-hover-border:#d99a95;
+    --tip-bg:rgba(255,255,255,.97); --tip-shadow:rgba(20,20,15,.18);
+  }
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f9f9f7; --panel:#fcfcfb; --panel-top:#ffffff; --well:#fcfcfb;
+  --line:#dcdad2; --line-soft:#e8e6de; --grid:#e1e0d9; --axis:#c3c2b7;
+  --header-bg:rgba(249,249,247,.82);
+  --shadow-1:rgba(20,20,15,.06); --shadow-2:rgba(20,20,15,.14);
+  --text:#0b0b0b; --dim:#52514e; --faint:#898781;
+  --x:#eb6834; --y:#1baf7a; --z:#2a78d6;
+  --band-fill:rgba(235,104,52,.16); --band-border:rgba(235,104,52,.4);
+  --accent:#966c12;
+  --ok:#2a8336; --ok-bg:#e7f8ea; --ok-border:#aee0b4;
+  --warn:#946b14; --warn-bg:#f8f3e7; --warn-border:#e0d0ae;
+  --err:#c81e12; --err-bg:#f8e8e7; --err-border:#e0b0ae;
+  --field-1:#ffffff; --field-2:#f3f2ef;
+  --field-hover-1:#f7f6f2; --field-hover-2:#efeeea; --field-hover-border:#c7c5bb;
+  --track:#e5e3da; --thumb-shadow:rgba(20,20,15,.25);
+  --input-bg:#f3f2ef;
+  --danger-ink:#c81e12; --danger-1:#fdecea; --danger-2:#fbe0dd; --danger-border:#e3b4b0;
+  --danger-hover-1:#fbdedb; --danger-hover-2:#f8d2ce; --danger-hover-border:#d99a95;
+  --tip-bg:rgba(255,255,255,.97); --tip-shadow:rgba(20,20,15,.18);
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);
@@ -37,7 +128,7 @@ body{margin:0;background:var(--bg);color:var(--text);
 
 /* ── Header ──────────────────────────────────────────────────────────── */
 header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;
-  padding:13px 22px;background:rgba(14,18,25,.82);
+  padding:13px 22px;background:var(--header-bg);
   -webkit-backdrop-filter:blur(14px) saturate(140%);
   backdrop-filter:blur(14px) saturate(140%);
   border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
@@ -52,9 +143,21 @@ h1 .mark{width:11px;height:11px;border-radius:3px;margin-right:9px;flex:none;
   font-variant-numeric:tabular-nums;letter-spacing:.005em}
 .chip::before{content:"";width:6px;height:6px;border-radius:50%;
   background:currentColor;flex:none;box-shadow:0 0 6px currentColor}
-.chip.ok{color:var(--ok);border-color:#1f4a2c;background:#0d1a12}
-.chip.warn{color:var(--warn);border-color:#5a4513;background:#1a1408}
-.chip.err{color:var(--err);border-color:#6b2622;background:#1c0f0f}
+.chip.ok{color:var(--ok);border-color:var(--ok-border);background:var(--ok-bg)}
+.chip.warn{color:var(--warn);border-color:var(--warn-border);background:var(--warn-bg)}
+.chip.err{color:var(--err);border-color:var(--err-border);background:var(--err-bg)}
+
+.theme-toggle{display:inline-flex;align-items:center;justify-content:center;
+  width:30px;height:30px;padding:0;flex:none;border-radius:999px;margin-left:auto;
+  border:1px solid var(--line);background:var(--well);color:var(--dim);
+  cursor:pointer;transition:color .13s,border-color .13s}
+.theme-toggle:hover{color:var(--text);border-color:var(--field-hover-border)}
+.theme-toggle svg{fill:none;stroke:currentColor;stroke-width:2}
+.theme-toggle .i-sun circle{fill:currentColor;stroke:none}
+.theme-toggle .i-moon path{fill:currentColor;stroke:none}
+.theme-toggle .i-moon{display:none}
+.theme-toggle.is-dark .i-sun{display:none}
+.theme-toggle.is-dark .i-moon{display:block}
 
 /* ── Layout ──────────────────────────────────────────────────────────── */
 main{display:grid;gap:18px;padding:18px 22px 40px;max-width:1600px;margin:0 auto;
@@ -63,7 +166,7 @@ main{display:grid;gap:18px;padding:18px 22px 40px;max-width:1600px;margin:0 auto
 section{background:linear-gradient(180deg,var(--panel-top),var(--panel));
   border:1px solid var(--line);border-radius:var(--radius);
   padding:15px 17px 17px;min-width:0;
-  box-shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8)}
+  box-shadow:0 1px 2px var(--shadow-1),0 8px 24px -16px var(--shadow-2)}
 /* The knobs are the one panel with no chart to size it, so it runs the full
    width and columnises rather than leaving a tall void beside it. */
 section.tuning{grid-column:1/-1}
@@ -79,7 +182,7 @@ canvas{width:100%;display:block;border-radius:9px;touch-action:none;
 canvas+canvas{margin-top:7px}
 
 /* ── Stat tiles ──────────────────────────────────────────────────────── */
-.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));
+.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
   gap:8px;margin-top:14px}
 .readout div{display:flex;flex-direction:column;gap:3px;min-width:0;
   background:var(--well);border:1px solid var(--line-soft);border-radius:10px;
@@ -101,7 +204,7 @@ canvas+canvas{margin-top:7px}
 .legend .key i.ring{width:9px;height:9px;border-radius:50%;
   border:1px solid var(--dim)}
 .legend .key i.band{width:14px;height:9px;border-radius:2px;
-  background:rgba(217,89,38,.22);border:1px solid rgba(217,89,38,.4)}
+  background:var(--band-fill);border:1px solid var(--band-border)}
 /* Peak hold is drawn as a dashed line in each series' own colour, so the key
    shows the dash rather than a hue it does not have one of. */
 .legend .key i.hold{background:repeating-linear-gradient(90deg,
@@ -118,38 +221,38 @@ canvas+canvas{margin-top:7px}
 input[type=range]{-webkit-appearance:none;appearance:none;width:100%;
   height:18px;background:none;margin:0;cursor:pointer}
 input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:999px;
-  background:#1d2531}
+  background:var(--track)}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;
   height:14px;margin-top:-5px;border-radius:50%;background:var(--accent);
-  border:2px solid var(--well);box-shadow:0 1px 3px rgba(0,0,0,.7)}
+  border:2px solid var(--well);box-shadow:0 1px 3px var(--thumb-shadow)}
 input[type=range]::-moz-range-track{height:4px;border-radius:999px;
-  background:#1d2531}
+  background:var(--track)}
 input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
   background:var(--accent);border:2px solid var(--well);
-  box-shadow:0 1px 3px rgba(0,0,0,.7)}
+  box-shadow:0 1px 3px var(--thumb-shadow)}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:13px}
-button{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
+button{background:linear-gradient(180deg,var(--field-1),var(--field-2));color:var(--text);
   border:1px solid var(--line);border-radius:9px;padding:7px 15px;
   cursor:pointer;font:inherit;font-weight:500;
   transition:background .13s,border-color .13s,transform .06s}
-button:hover{background:linear-gradient(180deg,#252f3c,#1d2530);
-  border-color:#36434f}
+button:hover{background:linear-gradient(180deg,var(--field-hover-1),var(--field-hover-2));
+  border-color:var(--field-hover-border)}
 button:active{transform:translateY(1px)}
 button:focus-visible,select:focus-visible,input:focus-visible{
   outline:2px solid var(--z);outline-offset:2px}
-button.primary{border-color:#6b2622;color:#ff9c96;
-  background:linear-gradient(180deg,#241619,#1c1215)}
-button.primary:hover{background:linear-gradient(180deg,#31191c,#241619);
-  border-color:#8b2c26}
+button.primary{border-color:var(--danger-border);color:var(--danger-ink);
+  background:linear-gradient(180deg,var(--danger-1),var(--danger-2))}
+button.primary:hover{background:linear-gradient(180deg,var(--danger-hover-1),var(--danger-hover-2));
+  border-color:var(--danger-hover-border)}
 .range{display:flex;align-items:center;gap:6px;color:var(--faint);font-size:12px}
 .range select{font-size:12px;padding:3px 6px}
 .toggle{display:flex;align-items:center;gap:7px;cursor:pointer;
   user-select:none;-webkit-user-select:none}
 .toggle input{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
-select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
+select{background:linear-gradient(180deg,var(--field-1),var(--field-2));color:var(--text);
   border:1px solid var(--line);border-radius:9px;padding:7px 11px;
   font:inherit;cursor:pointer}
-.range input[type=text],.range input[type=number]{background:#141a22;color:var(--text);
+.range input[type=text],.range input[type=number]{background:var(--input-bg);color:var(--text);
   border:1px solid var(--line);border-radius:9px;padding:5px 8px;font:inherit;font-size:12px}
 .range input[type=text]{width:9.5em}
 .range input[type=number]{width:5.5em}
@@ -167,8 +270,8 @@ select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
    the same instant on all of them -- which is how a glitch on one channel is
    matched against the others. */
 .tip{position:fixed;z-index:30;pointer-events:none;min-width:136px;
-  background:rgba(17,22,30,.97);border:1px solid var(--line);border-radius:10px;
-  padding:9px 11px;box-shadow:0 10px 30px rgba(0,0,0,.55);font-size:12px;
+  background:var(--tip-bg);border:1px solid var(--line);border-radius:10px;
+  padding:9px 11px;box-shadow:0 10px 30px var(--tip-shadow);font-size:12px;
   -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
 .tip[hidden]{display:none}
 .tip .when{color:var(--faint);font-size:11px;margin-bottom:6px;
@@ -202,6 +305,20 @@ select{background:linear-gradient(180deg,#1d2530,#171e27);color:var(--text);
     <span class="chip" id="c-gps">gps</span>
     <span class="chip" id="c-rate">— Hz</span>
   </div>
+  <button id="btn-theme" class="theme-toggle" type="button" aria-label="Switch to light mode">
+    <svg class="i-sun" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <circle cx="12" cy="12" r="4.6"/>
+      <g stroke-linecap="round">
+        <path d="M12 2.5v2.4"/><path d="M12 19.1v2.4"/>
+        <path d="M4.6 4.6l1.7 1.7"/><path d="M17.7 17.7l1.7 1.7"/>
+        <path d="M2.5 12h2.4"/><path d="M19.1 12h2.4"/>
+        <path d="M4.6 19.4l1.7-1.7"/><path d="M17.7 6.3l1.7-1.7"/>
+      </g>
+    </svg>
+    <svg class="i-moon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path d="M20.6 15.1A9 9 0 1 1 8.9 3.4a7.2 7.2 0 0 0 11.7 11.7z"/>
+    </svg>
+  </button>
 </header>
 
 <main>
@@ -503,10 +620,6 @@ const KNOBS = [
    about:'VQF time constant for the magnetometer correcting yaw. Higher = more immune to magnetic disturbance, slower to converge.'},
 ];
 
-// Drawing colours, mirroring :root in the stylesheet -- canvas needs literals,
-// so this is the one place they are duplicated. See the note there for why the
-// warm axis slot is orange and not red, and re-run the dataviz validator rather
-// than picking a replacement hue by eye.
 // Full-scale ranges. Discrete hardware settings rather than continuous knobs:
 // the chips offer exactly these values, and the firmware snaps anything else to
 // the nearest one -- so these are dropdowns, and a slider would be wrong.
@@ -516,12 +629,23 @@ const RANGES = [
   {k:'mag_range_gauss', n:'mag',   u:'gauss', opts:[4, 8, 12, 16]},
 ];
 
-const C = {
-  x:'#d95926', y:'#199e70', z:'#3987e5',
-  est:'#d95926', gps:'#3987e5', baro:'#199e70',
-  surface:'#0b0e14', grid:'#161d27', axis:'#2a3340',
-  ink:'#e8eef5', dim:'#94a1b1', faint:'#65707f',
-};
+// Canvas can't see CSS custom properties on its own, so drawing colours are
+// read back from :root with getComputedStyle rather than duplicated as a
+// second set of literals -- that duplication is exactly how the light and
+// dark palettes would drift apart one edit at a time. Re-read on every theme
+// change; everything that draws reads C.* at draw time, so reassigning it
+// here is all a theme switch needs to repaint the canvases in the new colours.
+function readThemeColors(){
+  const s = getComputedStyle(document.documentElement);
+  const v = name => s.getPropertyValue(name).trim();
+  return {
+    x:v('--x'), y:v('--y'), z:v('--z'),
+    est:v('--est'), gps:v('--gps'), baro:v('--baro'),
+    surface:v('--well'), grid:v('--grid'), axis:v('--axis'),
+    ink:v('--text'), dim:v('--dim'), faint:v('--faint'),
+  };
+}
+let C = readThemeColors();
 
 const rgba = (hex, a) => 'rgba(' + parseInt(hex.slice(1,3),16) + ',' +
   parseInt(hex.slice(3,5),16) + ',' + parseInt(hex.slice(5,7),16) + ',' + a + ')';
@@ -783,6 +907,24 @@ function drawSeries(canvas, series, band, label, minSpan, gpsIndex){
     ctx.fillText(v.toFixed(Math.max(0, -Math.floor(Math.log10(step)) + 1)), 3, y + 3);
   }
 
+  // Time axis, same treatment as the spectrum panel's frequency axis: a
+  // hairline gridline plus a "seconds ago" label, ticking back from "now" at
+  // the right edge. `pad.b` has always reserved the room for this; until now
+  // nothing was drawn there and a reader had only the panel's "last Ns" hint
+  // to know the span on screen.
+  const tStep = niceStep(windowSec);
+  ctx.strokeStyle = C.grid;
+  for (let ago = 0; ago <= windowSec; ago += tStep){
+    const t = now - ago;
+    if (t < from - 1e-6) continue;
+    const x = X(t);
+    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
+    ctx.fillStyle = C.faint;
+    ctx.textAlign = x > w - pad.r - 16 ? 'right' : x < pad.l + 16 ? 'left' : 'center';
+    ctx.fillText(ago === 0 ? 'now' : '-' + ago.toFixed(0) + 's', x, h - 3);
+  }
+  ctx.textAlign = 'left';
+
   // ±3σ envelope, drawn first so the traces sit on top of it.
   if (band){
     const s = series[0];
@@ -797,21 +939,6 @@ function drawSeries(canvas, series, band, label, minSpan, gpsIndex){
       ctx.lineTo(X(r.t), Y(r[s.key][s.index] - r[band][s.index]));
     }
     ctx.closePath(); ctx.fill();
-  }
-
-  // Raw GPS fixes as dots, so it is obvious when a fix arrives.
-  if (gpsIndex != null){
-    ctx.fillStyle = C.gps;
-    ctx.strokeStyle = C.surface;
-    ctx.lineWidth = 2;
-    for (const r of points){
-      if (!r.gps) continue;
-      ctx.beginPath();
-      ctx.arc(X(r.t), Y(r.gps[gpsIndex]), 3, 0, 7);
-      // Ring first, fill over its inner half: a surface-coloured ring separates
-      // the dot from the line it sits on without drawing a border in ink.
-      ctx.stroke(); ctx.fill();
-    }
   }
 
   // Traces.
@@ -832,6 +959,32 @@ function drawSeries(canvas, series, band, label, minSpan, gpsIndex){
     ctx.stroke();
   }
 
+  // Raw GPS fixes as dots, so it is obvious when a fix arrives. Drawn after
+  // the trace, so the dots sit on top of the line rather than the line
+  // cutting across them, and in two passes -- every ring, then every fill --
+  // rather than one ring-then-fill per point. Fixes can land close enough in
+  // time (or in value, for a noisy channel) that neighbouring dots overlap;
+  // interleaving stroke and fill per point let a later dot's surface-coloured
+  // ring bite into an earlier dot's fill, leaving a pale gap between them.
+  // Separating the passes means every ring lands before any fill, so a fill
+  // is never punched into by a ring drawn after it.
+  if (gpsIndex != null){
+    const fixes = points.filter(r => r.gps);
+    ctx.strokeStyle = C.surface;
+    ctx.lineWidth = 2;
+    for (const r of fixes){
+      ctx.beginPath();
+      ctx.arc(X(r.t), Y(r.gps[gpsIndex]), 4, 0, 7);
+      ctx.stroke();
+    }
+    ctx.fillStyle = C.gps;
+    for (const r of fixes){
+      ctx.beginPath();
+      ctx.arc(X(r.t), Y(r.gps[gpsIndex]), 4, 0, 7);
+      ctx.fill();
+    }
+  }
+
   // Endpoint marker -- the current value, which is the one point worth calling
   // out directly. Ringed for the same reason the GPS dots are.
   const tail = points[points.length - 1];
@@ -841,7 +994,7 @@ function drawSeries(canvas, series, band, label, minSpan, gpsIndex){
     ctx.fillStyle = s.color;
     ctx.strokeStyle = C.surface;
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(X(tail.t), Y(v), 3.5, 0, 7);
+    ctx.beginPath(); ctx.arc(X(tail.t), Y(v), 4, 0, 7);
     ctx.stroke(); ctx.fill();
   }
 
@@ -1203,7 +1356,7 @@ function drawPosition3d(){
 
   // Axis-aligned 3σ ellipsoid, drawn as its three principal rings. The filter
   // publishes only the covariance diagonal, so axis-aligned is exactly right.
-  ctx.strokeStyle = 'rgba(139,148,158,0.55)';
+  ctx.strokeStyle = rgba(C.dim, 0.55);
   ctx.lineWidth = 1;
   const planes = [[0,1], [0,2], [1,2]];
   for (const [i, j] of planes){
@@ -1231,15 +1384,18 @@ function drawPosition3d(){
   });
   ctx.stroke();
 
-  // Raw fixes.
-  ctx.fillStyle = C.gps;
+  // Raw fixes. Two passes, every ring then every fill, so a fix that lands
+  // close to a neighbour on screen never gets a bite taken out of its fill by
+  // the next fix's ring -- see the note in drawSeries().
+  const fixPts = points.filter(r => r.gps).map(r => project(rel(r.gps), cam, cx, cy, scale));
   ctx.strokeStyle = C.surface;
   ctx.lineWidth = 2;
-  for (const r of points){
-    if (!r.gps) continue;
-    const pt = project(rel(r.gps), cam, cx, cy, scale);
-    ctx.beginPath(); ctx.arc(pt[0], pt[1], 3, 0, 7);
-    ctx.stroke(); ctx.fill();
+  for (const pt of fixPts){
+    ctx.beginPath(); ctx.arc(pt[0], pt[1], 4, 0, 7); ctx.stroke();
+  }
+  ctx.fillStyle = C.gps;
+  for (const pt of fixPts){
+    ctx.beginPath(); ctx.arc(pt[0], pt[1], 4, 0, 7); ctx.fill();
   }
 
   // Current estimate.
@@ -1353,6 +1509,36 @@ function seedKnobs(params){
   $('k-zupt').checked = !!params.zupt_enabled;
   $('k-gvel').checked = !!params.gps_vel_enabled;
   $('k-baro').checked = !!params.baro_enabled;
+}
+
+// ── Theme ──────────────────────────────────────────────────────────────────
+// data-theme, when set, is an explicit choice and wins over the OS setting
+// (the CSS media rule for light is guarded with :not([data-theme="dark"])).
+// Absent that attribute the effective theme just follows the OS.
+const lightPreferred = matchMedia('(prefers-color-scheme: light)');
+function currentTheme(){
+  return document.documentElement.dataset.theme || (lightPreferred.matches ? 'light' : 'dark');
+}
+function refreshTheme(){
+  C = readThemeColors();
+  const dark = currentTheme() === 'dark';
+  $('btn-theme').className = 'theme-toggle' + (dark ? ' is-dark' : '');
+  $('btn-theme').setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+}
+function bindTheme(){
+  refreshTheme();
+  $('btn-theme').addEventListener('click', () => {
+    const next = currentTheme() === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('theme', next); } catch (e) {}
+    refreshTheme();
+  });
+  // Only matters pre-toggle: once the viewer has picked a theme explicitly,
+  // data-theme shadows the OS setting and this listener's work is already
+  // guarded out by the CSS.
+  lightPreferred.addEventListener('change', () => {
+    if (!document.documentElement.dataset.theme) refreshTheme();
+  });
 }
 
 function bindControls(){
@@ -1584,6 +1770,7 @@ function render(){
 
 buildKnobs();
 buildRanges();
+bindTheme();
 bindControls();
 connect();
 requestAnimationFrame(render);
